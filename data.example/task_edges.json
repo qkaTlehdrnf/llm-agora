@@ -1,0 +1,41 @@
+[
+  {
+    "id": "edge-example000001",
+    "from_task_id": "design-schema",
+    "to_task_id": "impl-api",
+    "type": "blocks",
+    "direction": "directed",
+    "confidence": 1.0,
+    "source": "llm_jury",
+    "jury_models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+    "swap_consistent": true,
+    "jury_agreement": true,
+    "status": "active"
+  },
+  {
+    "id": "edge-example000002",
+    "from_task_id": "impl-api",
+    "to_task_id": "build-login-ui",
+    "type": "complements",
+    "direction": "directed",
+    "confidence": 1.0,
+    "source": "llm_jury",
+    "jury_models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+    "swap_consistent": true,
+    "jury_agreement": true,
+    "status": "active"
+  },
+  {
+    "id": "edge-example000003",
+    "from_task_id": "design-schema",
+    "to_task_id": "build-login-ui",
+    "type": "notify_on_change",
+    "direction": "undirected",
+    "confidence": 0.5,
+    "source": "llm_jury",
+    "jury_models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+    "swap_consistent": true,
+    "jury_agreement": false,
+    "status": "active"
+  }
+]

@@ -1,0 +1,169 @@
+{
+  "_file": "DEPLOYMENT.json — 설치·초기화·디스커버리·서비스 개시 명세",
+  "_purpose": "광장을 컴퓨터에 설치한 뒤, 임의 폴더에서 자동으로 시스템을 파악하고 LLM Agent용 서비스를 시작할 수 있도록 함 (OpenClaw 패턴)",
+
+  "installation": {
+    "package_name": "llm-agora",
+    "install_cmd": {
+      "dev_mode":  "pip install -e .",
+      "future_pypi": "pip install llm-agora"
+    },
+    "entry_points": {
+      "console_scripts": {
+        "gwangjang": "llm_agora.src.cli:main"
+      }
+    },
+    "post_install_state": "터미널에서 `gwangjang` 명령어 즉시 사용 가능"
+  },
+
+  "cli_subcommands": {
+    "init": {
+      "usage": "gwangjang init [path]",
+      "desc": "현재 폴더(또는 지정 path)에 광장 초기화",
+      "creates": [
+        ".gwangjang/                — 광장 루트 마커 (git의 .git과 동일 역할)",
+        ".gwangjang/config.json     — 광장 설정",
+        ".gwangjang/data/projects.json",
+        ".gwangjang/data/tasks.json",
+        ".gwangjang/data/requests/",
+        ".gwangjang/data/logs/",
+        ".gwangjang/data/call_graph.json"
+      ],
+      "behavior_if_exists": "기존 .gwangjang/ 발견 시 초기화 중단 + 경고"
+    },
+    "discover": {
+      "usage": "gwangjang discover [--llm]",
+      "desc": "현재 광장 루트의 폴더 구조 스캔 → 프로젝트/태스크 자동 식별 → projects.json/tasks.json에 seed로 등록",
+      "phases": [
+        "1. 휴리스틱 스캔 (빠름, LLM 없이)",
+        "2. --llm 플래그 시 LLM 호출로 의심스러운 폴더 정제"
+      ],
+      "interactive": "각 발견 항목에 대해 'add/skip/edit' 사용자 확인 (기본). --yes로 자동 승인."
+    },
+    "start": {
+      "usage": "gwangjang start [--daemon]",
+      "desc": "광장 서비스 시작",
+      "default_mode": "stateless CLI 모드 — 각 call이 새 프로세스",
+      "daemon_mode": "백그라운드 데몬 + Unix socket 리스너 (future phase 7+)",
+      "current_implementation": "CLI 모드만 우선 구현. start 명령은 사실상 health check + 환경 출력."
+    },
+    "call": {
+      "usage": "gwangjang call '<JSON>'",
+      "desc": "Agent가 광장에 호출 — CALL_INTERFACE.json의 5개 메서드",
+      "equivalent_to": "python -m llm_agora.src.call '<JSON>'"
+    },
+    "status": {
+      "usage": "gwangjang status",
+      "desc": "현재 광장 루트, 등록 프로젝트 수, 미해결 요청, 최근 로그 요약",
+      "output_format": "human-readable + --json 옵션"
+    },
+    "root": {
+      "usage": "gwangjang root",
+      "desc": "현재 디렉터리에서 광장 루트(.gwangjang/) 경로 출력. 없으면 비제로 exit code.",
+      "use_case": "스크립트에서 광장 활성 여부 확인"
+    }
+  },
+
+  "root_detection": {
+    "algorithm": "git이 .git을 찾는 방식과 동일 — 현재 디렉터리 → 상위 → 루트까지 .gwangjang/ 탐색",
+    "implementation": "src/utils.py::find_gwangjang_root(start=None) -> Path | None",
+    "behavior_if_not_found": "subcommand별 다름 — init은 현재 폴더에 생성, 그 외는 에러 + 'gwangjang init' 안내"
+  },
+
+  "discovery_logic": {
+    "philosophy": "최소 LLM 호출 — 휴리스틱으로 90% 처리, 애매한 부분만 LLM",
+
+    "heuristic_phase": {
+      "scan_for_projects": {
+        "indicators": [
+          "projects/{name}/ 또는 src/{name}/ 구조 (현재 레포 패턴)",
+          "{name}/pyproject.toml, package.json, Cargo.toml 등 패키지 매니페스트",
+          "{name}/README.md 또는 CLAUDE.md 존재",
+          "{name}/.git submodule"
+        ],
+        "exclude": ["node_modules/", "__pycache__/", ".venv/", "venv/", "archived/", ".git/"],
+        "output": "candidate Project 항목 리스트 (id, path, indicators)"
+      },
+      "scan_for_tasks": {
+        "indicators": [
+          "tasks.json 파일 (현재 docs/tasks.json 같은 형식)",
+          "TODO.md, ROADMAP.md 마크다운 파일",
+          "docs/agents/{project}/task_*.json (광장 기존 구조)",
+          "Github issues (gh CLI 사용 가능 시)"
+        ],
+        "output": "candidate Task 항목 리스트"
+      },
+      "scan_for_existing_gwangjang": "기존 docs/agents/MANIFEST.json 발견 시 → 이미 광장-친화 구조로 간주, 그대로 import"
+    },
+
+    "llm_phase": {
+      "trigger": "휴리스틱에서 confidence 낮은 항목 또는 사용자 --llm 플래그",
+      "prompt_minimal": "주어진 폴더 트리에서 '독립적 프로젝트로 볼 만한 단위'를 식별. 각각의 final goal 한 줄 추정.",
+      "llm_call_budget": "기본 1회 (전체 폴더 트리 요약). 추가 호출은 사용자 명시적 승인."
+    }
+  },
+
+  "config_file_schema": {
+    "_path": ".gwangjang/config.json",
+    "fields": {
+      "version": "광장 버전",
+      "created_at": "ISO8601",
+      "root_path": "절대 경로 (.gwangjang/ 의 부모)",
+      "llm_backend": "vllm | gemini | claude — Agent 검토용",
+      "similarity_threshold": "0.3 (default)",
+      "excluded_paths": ["node_modules", "__pycache__", "..."],
+      "data_path": ".gwangjang/data/ (relative to root_path)"
+    }
+  },
+
+  "agent_workflow_after_install": {
+    "step1_user_install": "pip install llm-agora",
+    "step2_user_init":    "cd 프로젝트폴더 && gwangjang init",
+    "step3_user_discover":"gwangjang discover --llm  # 폴더 구조 자동 분석",
+    "step4_user_review":  "사용자가 발견된 프로젝트/태스크 확인 후 승인",
+    "step5_agent_call":   "LLM Agent가 'gwangjang call ...'로 광장 서비스 사용",
+    "step6_optional":     "gwangjang start --daemon (성능 향상 — future)"
+  },
+
+  "minimum_viable_implementation": {
+    "_priority": "phase 4 (call_interface) 다음 작업",
+    "_status": "DONE (2026-05-31, gwangjang-deployment task). src/cli.py + src/utils.py + src/discover.py + pyproject.toml 구현.",
+    "_deviations": [
+      "entry_point 은 console_scripts 가 `llm_agora.src.cli:main` (pyproject package-dir 매핑). monorepo 에서는 `python -m llm_agora.src.cli` 로 동등 실행.",
+      "데이터 레이아웃은 .gwangjang/data/ 안에 Store 호환 flat JSON(projects/tasks/agents/change_requests/task_edges.json + log.jsonl) 으로 통일. 명세의 requests/ logs/ 하위 디렉터리 분리는 채택하지 않음 — 기존 Store 재사용 우선.",
+      "discover 는 휴리스틱만 구현(후보 출력). --llm 정제와 add/skip/edit 인터랙티브 등록은 후속."
+    ],
+    "must_have": [
+      "src/cli.py — argparse 기반 subcommand 디스패치",
+      "src/utils.py::find_gwangjang_root() — .gwangjang 탐색",
+      "init: .gwangjang/ + 빈 data 파일들 생성",
+      "discover (heuristic only): 휴리스틱 스캔",
+      "status: 등록 카운트 + 최근 로그 요약",
+      "call: src/call.py에 위임",
+      "root: 루트 경로 출력 또는 exit 1"
+    ],
+    "later": [
+      "discover --llm: LLM 정제",
+      "start --daemon: Unix socket 데몬 모드",
+      "PyPI 배포"
+    ]
+  },
+
+  "interactions_with_existing_system": {
+    "current_repo_already_has_data": "이 레포의 docs/agents/MANIFEST.json + docs/tasks.json은 이미 광장-호환 형식. `gwangjang init`을 이 레포 루트에서 실행하면 .gwangjang/이 생성되고, discover는 기존 데이터를 발견 → 자동 import 가능.",
+    "migration_path": "discover 단계에서 docs/tasks.json + docs/agents/MANIFEST.json 발견 → .gwangjang/data/ 로 복사 (또는 심볼릭 링크). 기존 파일들은 보존."
+  },
+
+  "vs_openclaw": {
+    "shared": [
+      "패키지 설치 후 임의 폴더에서 시작 가능",
+      "프로젝트별 격리된 상태 디렉터리 (광장: .gwangjang/, OpenClaw: agentDir)",
+      "service-as-a-runtime 모델"
+    ],
+    "different": [
+      "광장은 데몬 옵션이지 필수 아님 — CLI 호출만으로 충분",
+      "광장은 폴더 자동 디스커버리에 집중 — OpenClaw는 채널/메시지 라우팅에 집중",
+      "광장은 단일 사용자 로컬 — OpenClaw는 multi-user gateway 지향"
+    ]
+  }
+}

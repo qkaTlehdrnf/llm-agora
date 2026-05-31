@@ -1,0 +1,208 @@
+{
+  "_file": "DATA_MODELS.json — 광장 시스템 데이터 모델 전체 명세",
+
+  "Project": {
+    "_desc": "최종 목표가 명확히 정의된 작업 단위. 광장이 관리.",
+    "schema": {
+      "id": "kebab-case string, unique",
+      "title": "human-readable title",
+      "goal": "최종 목적 — 단일 문장, 명확하고 측정 가능",
+      "tags": ["tag1", "tag2"],
+      "description_llm": "LLM-최적화 설명 (최소 토큰, 최대 정보)",
+      "status": "active | paused | completed",
+      "domain": "크롤링 | 태깅 | 인프라 | 연구 | ...",
+      "tasks": ["task_id_1", "task_id_2"],
+      "assigned_agents": ["agent_id"],
+      "created_at": "ISO8601",
+      "completed_at": "ISO8601 | null",
+      "completion_criteria": "완료 판단 기준 — 코드/데이터 검증 가능한 형태로"
+    },
+    "example": {
+      "id": "dept-lab-crawler",
+      "title": "Department Lab Crawler",
+      "goal": "11개 한국 연구중심대학의 전체 연구실 LabProfile JSON 수집 완료",
+      "tags": ["web-crawling", "BFS", "LLM-extraction", "university", "lab-data"],
+      "description_llm": "BFS로 학과 페이지 탐색→연구실 URL 수집→LLM 구조화. 입력: DeptIndex, 출력: LabProfile JSON",
+      "status": "active",
+      "domain": "크롤링",
+      "tasks": ["dgist-crawl", "google-sites-skip"],
+      "completion_criteria": "all 11 universities: diagnose_broken_depts shows 0 broken"
+    }
+  },
+
+  "Task": {
+    "_desc": "Project 내 단일 실행 단위. 자기완결형.",
+    "schema": {
+      "id": "kebab-case string",
+      "project_id": "parent Project.id",
+      "action": "one-line 실행 지시",
+      "status": "todo | in_progress | done | blocked | cancelled",
+      "priority": "urgent | high | normal | low",
+      "prerequisite_task_ids": ["task_id"],
+      "done_when": "완료 기준 — 검증 가능",
+      "cmd": "실행 커맨드 or null",
+      "assigned_agent": "agent_id | null",
+      "created_at": "ISO8601",
+      "created_by": "agent_id | human",
+      "context": {}
+    }
+  },
+
+  "Agent": {
+    "_desc": "자기소개를 제출하고 프로젝트에 배정되는 실행 단위",
+    "schema": {
+      "id": "unique agent identifier",
+      "type": "gwangjang | worker",
+      "self_description": "내가 무엇을 하는지 — 2-3문장",
+      "capabilities": ["tag1", "tag2"],
+      "current_project_id": "배정된 project_id | null",
+      "current_task_id": "진행 중인 task_id | null",
+      "session_context": "광장이 제공한 최소 컨텍스트 (need-to-know)"
+    }
+  },
+
+  "ChangeRequest": {
+    "_desc": "Worker Agent가 프로젝트/태스크 변경 시 광장에 제출하는 요청",
+    "schema": {
+      "id": "uuid",
+      "requesting_agent_id": "string",
+      "request_type": "create_task | modify_task | delete_task | create_project | complete_project | modify_project",
+      "target_id": "project_id or task_id",
+      "payload": "변경 내용 (type에 따른 스키마)",
+      "rationale": "논리적 근거 — 광장 Agent가 검토",
+      "required_docs": ["doc_type_1"],
+      "submitted_docs": {"doc_type_1": "content"},
+      "status": "pending | awaiting_docs | under_review | approved | rejected",
+      "review_note": "광장 Agent의 검토 코멘트",
+      "submitted_at": "ISO8601",
+      "resolved_at": "ISO8601 | null"
+    },
+    "doc_types": {
+      "task_justification": "왜 이 태스크가 필요한가, 어떻게 목표에 기여하는가",
+      "completion_evidence": "태스크 완료 증거 (파일 경로, 커맨드 출력, 검증 결과)",
+      "dependency_analysis": "다른 태스크/프로젝트와의 의존성 분석",
+      "impact_assessment": "변경이 기존 시스템에 미치는 영향"
+    }
+  },
+
+  "LogEntry": {
+    "_desc": "모든 이벤트의 불변 기록. append-only. 삭제 불가.",
+    "schema": {
+      "log_id": "sequential integer",
+      "timestamp": "ISO8601",
+      "actor": "agent_id",
+      "action_type": "onboarding | recommendation | request_submitted | docs_requested | request_approved | request_rejected | task_status_changed | circular_detected",
+      "target": {"type": "project|task|request", "id": "..."},
+      "before_state": "변경 전 상태 스냅샷 | null",
+      "after_state": "변경 후 상태 스냅샷 | null",
+      "request_id": "ChangeRequest.id | null",
+      "context": "추가 맥락"
+    },
+    "immutability_rule": "log 파일은 append만 가능. 기존 항목 수정/삭제 금지. 코드 수준에서 강제."
+  },
+
+  "CallGraph": {
+    "_desc": "순환 호출 탐지용 방향 그래프. 코드 레이어가 관리.",
+    "schema": {
+      "nodes": ["resource_id (project_id, task_id, doc_id)"],
+      "edges": [{"from": "caller_agent_id + resource_id", "to": "requested_resource_id", "timestamp": "ISO8601"}]
+    },
+    "cycle_detection": "DFS — 방문 중인 노드에 재방문 시 순환으로 판정",
+    "on_cycle": {
+      "action": "해당 옵션 available=false로 마킹",
+      "agent_response": "summary_only=true (세부 정보 제공 안 함)",
+      "log": "action_type='circular_detected'"
+    }
+  },
+
+  "SimilarityScore": {
+    "_desc": "자기소개 → 프로젝트 추천 시 계산되는 유사도",
+    "schema": {
+      "project_id": "string",
+      "tag_score": "0.0-1.0 (jaccard similarity on tags)",
+      "semantic_score": "0.0-1.0 (cosine similarity on embeddings)",
+      "final_score": "weighted_avg(tag_score*0.4, semantic_score*0.6)",
+      "available": "bool (false if circular_detected)"
+    }
+  },
+
+  "TaskEdge": {
+    "_desc": "task ↔ task 간 typed 관계. SPEC.json link_inference_system 출력.",
+    "_added": "2026-05-28",
+    "schema": {
+      "id": "uuid",
+      "from_task_id": "Task.id (방향 type 의 경우 source)",
+      "to_task_id": "Task.id (방향 type 의 경우 target)",
+      "type": "blocks | overlaps_with | complements | notify_on_change | supersedes",
+      "direction": "directed | undirected — type 에 따라 결정",
+      "confidence": "0.0 | 0.5 | 1.0 — (swap_agreement) * (jury_agreement)",
+      "source": "llm_jury | inherited (P2 GraphSAGE 등) ",
+      "jury_models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+      "swap_consistent": "bool — A->B 와 B->A 호출 결과 일치 여부",
+      "jury_agreement": "bool — 모든 jury model 합의 여부",
+      "created_at": "ISO8601",
+      "last_verified_at": "ISO8601 — monthly drift check 마지막 시각",
+      "status": "active | drift_detected | superseded_by_human_override"
+    },
+    "constraints": {
+      "no_self_loop": "from_task_id != to_task_id",
+      "no_blocks_cycle": "type == blocks 인 edge 들로 DAG invariant 강제 (코드 레이어 검증)",
+      "unique_pair_type": "(from, to, type) 조합 고유. 동일 쌍에 여러 type 가능 (예: blocks + notify_on_change)"
+    },
+    "example": {
+      "id": "edge-abc123",
+      "from_task_id": "gwangjang-data-models",
+      "to_task_id": "gwangjang-code-layer",
+      "type": "blocks",
+      "direction": "directed",
+      "confidence": 1.0,
+      "source": "llm_jury",
+      "jury_models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+      "swap_consistent": true,
+      "jury_agreement": true,
+      "created_at": "2026-05-28T10:00:00Z",
+      "last_verified_at": "2026-05-28T10:00:00Z",
+      "status": "active"
+    }
+  },
+
+  "GraphJSON": {
+    "_desc": "광장이 외부 (lab_relationship_visualizer 등) 로 export 하는 표준 그래프 형식. task 그래프 + lab 그래프 통합 뷰어를 위해 공통 스키마.",
+    "_added": "2026-05-28",
+    "_consumer": "projects/lab_relationship_visualizer/",
+    "schema": {
+      "version": "1.0",
+      "exported_at": "ISO8601",
+      "exporter": "gwangjang graph export",
+      "nodes": [
+        {
+          "id": "task_id 또는 lab_id",
+          "type": "task | project | lab",
+          "label": "human-readable",
+          "attrs": {
+            "tags": ["..."],
+            "weighted_tags": [{"tag": "...", "weight": 0.0}],
+            "status": "...",
+            "priority": "...",
+            "domain": "..."
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "node.id",
+          "to": "node.id",
+          "type": "blocks | overlaps_with | complements | notify_on_change | supersedes | lab_similarity 등",
+          "direction": "directed | undirected",
+          "confidence": "0.0-1.0",
+          "weight": "rendering 용 굵기 가중치 (선택)"
+        }
+      ]
+    },
+    "rendering_hints": {
+      "directed_types": ["blocks", "complements", "supersedes"],
+      "undirected_types": ["overlaps_with", "notify_on_change", "lab_similarity"],
+      "color_by": "type 별 색상 매핑은 lab_relationship_visualizer 에서 정의"
+    }
+  }
+}

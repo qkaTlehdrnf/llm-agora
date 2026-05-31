@@ -1,0 +1,38 @@
+[
+  {
+    "id": "api_backend",
+    "title": "API Backend",
+    "goal": "REST API 서버를 설계·구현하고 인증을 붙인다.",
+    "tags": ["backend", "api", "auth"],
+    "description_llm": "OpenAPI 스키마를 단일 출처로 하는 백엔드. 스키마 → 핸들러 구현 → 인증 순으로 진행. 프론트엔드/인프라 프로젝트가 이 스키마를 입력으로 사용한다.",
+    "status": "active",
+    "domain": "backend",
+    "tasks": ["design-schema", "impl-api"],
+    "assigned_agents": [],
+    "completion_criteria": "모든 엔드포인트가 OpenAPI 스키마와 일치하고 통합 테스트 통과."
+  },
+  {
+    "id": "web_frontend",
+    "title": "Web Frontend",
+    "goal": "사용자용 웹 UI를 구축한다.",
+    "tags": ["frontend", "ui", "auth"],
+    "description_llm": "백엔드 API 스키마를 소비하는 SPA. 로그인 화면은 인증 API에 의존한다.",
+    "status": "active",
+    "domain": "frontend",
+    "tasks": ["build-login-ui"],
+    "assigned_agents": [],
+    "completion_criteria": "로그인 플로우가 실제 API와 연동되어 동작."
+  },
+  {
+    "id": "infra",
+    "title": "Infrastructure",
+    "goal": "CI/CD 와 배포 파이프라인을 구성한다.",
+    "tags": ["infra", "ci", "deploy"],
+    "description_llm": "테스트·빌드·배포 자동화. 다른 프로젝트의 산출물을 빌드/배포한다.",
+    "status": "active",
+    "domain": "infrastructure",
+    "tasks": ["setup-ci"],
+    "assigned_agents": [],
+    "completion_criteria": "main 머지 시 자동 테스트→빌드→스테이징 배포 동작."
+  }
+]

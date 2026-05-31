@@ -1,0 +1,164 @@
+{
+  "_file": "CALL_INTERFACE.json — Agent → 광장 호출 인터페이스 명세",
+  "_design_principle": "MCP보다 단순. 단방향(Agent→광장). 스트리밍 없음. 협상 없음. JSON in → JSON out 전부.",
+
+  "how_agent_calls": {
+    "mechanism": "Python CLI — Agent의 Bash 툴로 실행",
+    "command": "gwangjang call '<JSON>'  (또는 python -m llm_agora.src.call '<JSON>')",
+    "input": "단일 JSON 문자열 (method + params)",
+    "output": "stdout에 JSON 출력 — {ok: bool, result: any} 또는 {ok: false, error: string}",
+    "why_cli_not_http": "로컬 전용. HTTP 서버 띄울 필요 없음. Bash 툴로 충분. 단순함 최우선."
+  },
+
+  "response_envelope": {
+    "success": {"ok": true, "result": "<method별 반환값>"},
+    "failure": {"ok": false, "error": "<이유>", "code": "<error_code>"},
+    "error_codes": {
+      "INVALID_INPUT":    "params 형식 오류",
+      "NOT_FOUND":        "project_id / task_id / request_id 존재하지 않음",
+      "CIRCULAR":         "순환 호출 탐지",
+      "MISSING_DOCS":     "required_docs 미제출",
+      "PERMISSION_DENIED":"Agent가 접근할 수 없는 리소스",
+      "VALIDATION_ERROR": "ChangeRequest 형식 검증 실패"
+    }
+  },
+
+  "methods": {
+    "onboard": {
+      "desc": "Agent 자기소개 → 프로젝트 추천 목록 반환 (tag Jaccard + TF-IDF + optional dense)",
+      "params": {
+        "description": "string — 내가 하는 일 2-3문장",
+        "capabilities": ["string"],
+        "top_n": "int (default 5)",
+        "threshold": "float (default 0.0) — final_score 하한",
+        "use_dense": "bool (default false) — dense 임베딩 채널(콜드스타트 ~90s)"
+      },
+      "returns": {
+        "recommendations": [
+          {
+            "project_id": "string",
+            "title": "string",
+            "goal": "string",
+            "score": 0.87,
+            "tag_score": 0.66,
+            "semantic_score": 0.73,
+            "available": true
+          },
+          {
+            "project_id": "string",
+            "title": "string",
+            "score": 0.52,
+            "available": false,
+            "unavailable_reason": "circular_dependency"
+          }
+        ]
+      },
+      "example_call": "python -m llm_agora.src.call '{\"method\":\"onboard\",\"params\":{\"description\":\"BFS로 대학 학과 페이지를 크롤링합니다\",\"capabilities\":[\"web-crawling\",\"BFS\",\"HTML-parsing\"]}}'",
+      "side_effects": ["CallGraph에 호출 기록", "LogEntry 생성 (action_type=onboarding)"]
+    },
+
+    "get_context": {
+      "desc": "프로젝트/태스크 컨텍스트 반환 (need-to-know 필터 적용)",
+      "params": {
+        "project_id": "string",
+        "task_id": "string | null — null이면 프로젝트 수준 컨텍스트만"
+      },
+      "returns": {
+        "project": "<Project 객체 (필터링됨)>",
+        "task": "<Task 객체 | null>",
+        "available_next_tasks": ["task_id"]
+      },
+      "on_circular": {"ok": false, "error": "CIRCULAR", "summary": "50자 이내 요약만 반환"},
+      "side_effects": ["CallGraph에 엣지 추가", "순환 탐지"]
+    },
+
+    "submit_request": {
+      "desc": "프로젝트/태스크 변경 요청 제출",
+      "params": {
+        "request_type": "create_task | modify_task | delete_task | create_project | complete_project | modify_project",
+        "target_id": "project_id 또는 task_id",
+        "payload": "<변경 내용 — request_type에 따라 다름>",
+        "rationale": "string — 논리적 근거 (광장 Agent가 검토)"
+      },
+      "returns": {
+        "request_id": "uuid",
+        "status": "awaiting_docs | under_review",
+        "required_docs": ["doc_type_1", "doc_type_2"]
+      },
+      "note": "required_docs가 비어있지 않으면 반드시 submit_docs 호출 후 검토 진행",
+      "side_effects": ["ChangeRequest 파일 생성 (data/requests/{id}.json)", "LogEntry 생성"]
+    },
+
+    "submit_docs": {
+      "desc": "ChangeRequest에 필요 서류 추가 제출",
+      "params": {
+        "request_id": "uuid",
+        "docs": {
+          "<doc_type>": "<내용 — LLM 최적화 JSON 또는 string>"
+        }
+      },
+      "returns": {
+        "request_id": "uuid",
+        "status": "awaiting_docs | under_review",
+        "missing_docs": ["아직 미제출 서류들"]
+      },
+      "note": "missing_docs가 빈 배열이 되면 광장 Agent 검토 시작",
+      "side_effects": ["ChangeRequest 파일 업데이트", "모든 서류 완비 시 광장 Agent 검토 트리거"]
+    },
+
+    "review_request": {
+      "desc": "광장 Agent(Coordinator)가 ChangeRequest를 LLM으로 검토 → 승인/거절/추가서류. 승인 시 store에 실제 반영(_apply_change).",
+      "params": {
+        "request_id": "uuid",
+        "force_mock": "bool (default false) — true면 LLM 키 있어도 MockCoordinator 강제"
+      },
+      "returns": {
+        "request_id": "uuid",
+        "decision": "approve | reject | need_docs",
+        "status": "approved | rejected | awaiting_docs",
+        "review_note": "string — 조정자 코멘트",
+        "reviewer": "mock-coordinator | gemini-2.5-flash | claude-haiku-4-5-20251001",
+        "required_docs": ["doc_type"],
+        "applied": "<적용 요약 dict | null — approve일 때만>"
+      },
+      "gate": "필수 서류 미완비 시 LLM 검토 진입 전 VALIDATION_ERROR로 차단 (code_regulation)",
+      "backend": "GOOGLE_API_KEY/GEMINI_API_KEY → Gemini, ANTHROPIC_API_KEY → Claude, 둘 다 없으면 MockCoordinator",
+      "side_effects": ["승인 시 task/project 생성·수정·삭제 실제 반영", "LogEntry 생성 (request_approved | request_rejected | docs_requested)"]
+    },
+
+    "get_request_status": {
+      "desc": "제출한 ChangeRequest의 현재 상태 조회",
+      "params": {
+        "request_id": "uuid"
+      },
+      "returns": {
+        "request_id": "uuid",
+        "status": "pending | awaiting_docs | under_review | approved | rejected",
+        "review_note": "string | null — 광장 Agent의 검토 코멘트",
+        "missing_docs": ["아직 미제출 서류 — awaiting_docs 상태일 때"]
+      }
+    }
+  },
+
+  "method_call_rules": {
+    "required_order": "onboard 먼저 → get_context → 태스크 수행 → submit_request (필요시)",
+    "no_circular": "get_context로 이미 받은 리소스를 다시 get_context로 호출 시 순환 탐지",
+    "one_project_per_session": "Agent는 한 세션에서 하나의 프로젝트만 담당 (onboard에서 하나 선택)",
+    "cannot_skip_docs": "submit_request 후 required_docs 제출 없이 get_request_status만 반복 불가 — 광장이 응답 없음"
+  },
+
+  "implementation": {
+    "entry_point": "src/call.py",
+    "class": "GwangjangCLI",
+    "routing": "method 이름 → 해당 함수 디스패치",
+    "validation": "params → Pydantic 모델로 파싱 (validator.py)",
+    "logging": "모든 호출 → log_manager.append()",
+    "error_handling": "예외 → {ok: false, error: message, code: ERROR_CODE} 반환 (절대 스택트레이스 출력 안 함)"
+  },
+
+  "vs_mcp": {
+    "removed": ["tool registration", "schema discovery", "streaming", "capability negotiation", "bidirectional communication"],
+    "kept": ["JSON input/output", "structured error codes", "method-based routing"],
+    "added": ["circular detection 내장", "need-to-know 자동 필터", "append-only 로그 자동화"]
+  }
+}

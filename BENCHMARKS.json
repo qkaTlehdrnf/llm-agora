@@ -1,0 +1,155 @@
+{
+  "_file": "BENCHMARKS.json — link_inference_system 의 평가 protocol 및 목표치 명세",
+  "_added": "2026-05-28",
+  "_read_next": "SPEC.json link_inference_system 섹션 참조",
+  "_decision_log": "docs/research_notes/task_linking_methodologies.md",
+
+  "external_benchmarks_referenced": {
+    "OGB_link_property_prediction": {
+      "url": "https://ogb.stanford.edu/docs/leader_linkprop/",
+      "relevant_datasets": {
+        "ogbl-citation2": {
+          "metric": "MRR",
+          "current_top": 0.9305,
+          "top_model": "GraphGPT(d1n30)",
+          "fit": "학술 인용, sparse + attributed — 우리 task graph 와 가장 유사"
+        },
+        "ogbl-wikikg2": {
+          "metric": "MRR",
+          "current_top": 0.7392,
+          "top_model": "RelEns",
+          "fit": "typed multi-relation — 우리 typed edge 와 가장 유사. typed 가 untyped 보다 어렵다는 증거."
+        },
+        "ogbl-biokg": {
+          "metric": "MRR",
+          "current_top": 0.9618,
+          "top_model": "RelEns (ensemble)"
+        }
+      }
+    },
+    "BEIR": {
+      "metric": "nDCG@10 (18-dataset 평균)",
+      "url": "https://github.com/beir-cellar/beir",
+      "reference_scores": {
+        "BM25": 0.43,
+        "E5-large-v2": 0.50,
+        "BGE-M3": 0.63,
+        "OpenAI text-embedding-3-large": 0.646,
+        "Cohere embed-v4": 0.652
+      },
+      "decision": "P0 dense backbone = BGE-M3 (다국어, 한국어 task description 지원)"
+    },
+    "RAGAS": {
+      "url": "https://docs.ragas.io/",
+      "metrics_used": ["context_precision", "context_recall", "faithfulness", "answer_relevancy"],
+      "reference_scores_glaucorag": {
+        "answer_relevancy": 0.91,
+        "context_recall": 0.80,
+        "faithfulness": 0.70,
+        "context_precision": 0.59
+      },
+      "decision": "P0 주력 메트릭. reference-free 라 사람 라벨 없이 운영 가능."
+    },
+    "Luders_2022": {
+      "_note": "이전 노트에서 Lin et al. 로 잘못 표기 — 정정",
+      "paper": "Lüders, Pietz, Maalej (Hamburg Univ.) — Automated Detection of Typed Links in Issue Trackers",
+      "url": "https://arxiv.org/pdf/2206.07182",
+      "bert_typed_link_9class": {
+        "macro_f1": 0.64,
+        "weighted_f1": 0.73
+      },
+      "decision": "P1 BERT fine-tune 폐기로 직접 비교 안 함. 참고만."
+    },
+    "LLM_as_jury_bias": {
+      "pairwise_flip_with_distractor": 0.35,
+      "decision": "swap-consistency + 2-model jury mandatory"
+    }
+  },
+
+  "p0_targets": {
+    "_phase": "현재 ~ +1mo",
+    "_data_state": "32 task, weighted_tag 일부, edge 라벨 0",
+    "stack": "BM25 + weighted_tag Jaccard + BGE-M3 dense -> RRF -> LLM jury typed (Gemini-2.5-Flash + Claude Haiku 4.5)",
+    "targets": {
+      "ndcg_at_10_candidate_ranking": {
+        "value": 0.50,
+        "justification": "BEIR top 0.65 의 ~77%. 우리 sparse + 한국어 혼재 환경 감안.",
+        "measurement": "self-test split (random hold-out 20%) + LLM judge 가 정답 시뮬레이션"
+      },
+      "ragas_context_precision": {
+        "value": 0.55,
+        "justification": "GlaucoRAG 운영 사례 0.59 와 동일 수준 — 정상 범위 하단.",
+        "measurement": "daily online eval (모든 jury 호출에 RAGAS metric 동시 계산)"
+      },
+      "self_consistency_rate": {
+        "value": 0.70,
+        "justification": "(swap_consistent AND jury_agreement) == True 비율. 35% flip rate 의 역수에서 마진.",
+        "measurement": "monthly drift check 시 자동 측정"
+      },
+      "typed_macro_f1_self_judged": {
+        "value": 0.40,
+        "_note": "사람 라벨 없으므로 'self-consistency F1' — 같은 쌍 재호출 일치율의 typed 분해",
+        "justification": "Lüders 0.64 의 ~62%. self-supervised baseline 의 현실 천장.",
+        "measurement": "monthly 같은 쌍 (A,B) 재호출 → type 일치율"
+      },
+      "edge_coverage": {
+        "value": 0.30,
+        "_note": "자동 surface 한 edge 중 사람이 spot-check 시 'plausible' 비율",
+        "justification": "precision 우선 정책. recall 은 P2 GraphSAGE 에 위임."
+      }
+    },
+    "eval_cadence": {
+      "ragas_context_precision": "daily (모든 호출에 동시 계산)",
+      "self_consistency_rate": "monthly",
+      "typed_macro_f1_self_judged": "monthly",
+      "edge_coverage": "monthly (사용자 spot-check 5쌍 × 6 month = 30 데이터 포인트)"
+    }
+  },
+
+  "p2_targets": {
+    "_phase": "+3mo ~ (~100 task, ~300 edge 누적 후)",
+    "_data_state": "그래프가 dense 해져 unsupervised graph emb 학습 가능",
+    "stack": "P0 + GraphSAGE (node feature = weighted_tags + BGE-M3 emb), unsupervised",
+    "targets": {
+      "hits_at_10_self_test": {
+        "value": 0.60,
+        "justification": "ogbl-citation2 천장 0.93 의 65%. self-test 라 외부 비교 불가하지만 internal trajectory 추적 가능."
+      },
+      "mrr_typed_self_test": {
+        "value": 0.50,
+        "justification": "ogbl-wikikg2 천장 0.74 의 68%."
+      },
+      "edge_coverage": {
+        "value": 0.50
+      }
+    }
+  },
+
+  "evaluation_protocol": {
+    "self_test_split": {
+      "method": "random 20% edge hold-out. P0 에서는 LLM jury 가 생성한 edge 자체를 split (self-consistency 측정용)",
+      "stratification": "type 별 균등 sampling (각 type 최소 5쌍 보장)"
+    },
+    "drift_detection": {
+      "schedule": "monthly cron",
+      "procedure": [
+        "기존 edge 중 status=active 인 50쌍 random sample",
+        "현재 jury model 로 재호출 (swap + 2-model)",
+        "type 또는 confidence 변경 시 edge.status = drift_detected",
+        "drift 누적 시 LLM model 버전 upgrade 검토"
+      ]
+    },
+    "human_spot_check": {
+      "schedule": "monthly 5쌍",
+      "purpose": "edge_coverage 측정. 자동 surface 한 edge 중 무작위 5쌍을 사람이 boolean (plausible / not) 라벨링",
+      "note": "결정 5.1 의 'LLM jury only' 와 모순 아님 — 라벨링이 시스템 학습에 들어가지 않고 *외부 평가* 용도로만 사용"
+    }
+  },
+
+  "regressions_to_watch": [
+    "BGE-M3 fine-tune 또는 버전 변경 시 nDCG@10 재측정 필수",
+    "jury model 변경 시 self_consistency_rate baseline 재정립",
+    "weighted_tag schema 변경 시 (notify_on_change!) Jaccard 채널 영향도 측정",
+    "5 type 분류가 자주 unknown (보류) 으로 빠지면 5.1 의 type 정의 모호 — 분해/병합 재검토"
+  ]
+}

@@ -1,0 +1,199 @@
+{
+  "_file": "PROTOCOL.json — Agent ↔ 광장 상호작용 프로토콜 전체 명세",
+
+  "onboarding_flow": {
+    "step1": {
+      "actor": "Worker Agent",
+      "action": "자기소개 제출",
+      "format": {"self_description": "내가 하는 일 2-3문장", "capabilities": ["tag1", "tag2"]},
+      "to": "광장"
+    },
+    "step2": {
+      "actor": "광장 (code layer)",
+      "action": "Agent.self_description + capabilities → similarity 계산 → top-N 프로젝트 추출",
+      "circular_check": "각 프로젝트에 대해 CallGraph 순환 여부 확인 → available 필드 설정"
+    },
+    "step3": {
+      "actor": "광장 → Worker",
+      "action": "추천 프로젝트 목록 반환",
+      "format": [
+        {"project_id": "...", "title": "...", "goal": "...", "score": 0.87, "available": true},
+        {"project_id": "...", "title": "...", "goal": "...", "score": 0.52, "available": false, "reason": "circular_dependency"}
+      ]
+    },
+    "step4": {
+      "actor": "Worker",
+      "action": "프로젝트 선택 OR 추가 정보 요청",
+      "options": ["select:{project_id}", "more_info:{project_id}", "none (다른 프로젝트 탐색)"]
+    },
+    "step5": {
+      "actor": "광장",
+      "action": "선택된 프로젝트의 최소 컨텍스트 제공 (need-to-know only)",
+      "provides": ["PROJECT.json (해당 프로젝트만)", "top-priority task_*.json (1-2개)", "필요 파일 경로 목록"],
+      "does_not_provide": "다른 프로젝트 정보, 전체 시스템 구조, 다른 Agent 컨텍스트"
+    }
+  },
+
+  "task_execution_flow": {
+    "step1": {"actor": "Worker", "action": "광장이 제공한 task_*.json 읽고 실행"},
+    "step2": {"actor": "Worker", "action": "추가 자료 필요 시 광장에 요청 (리소스 id 명시)"},
+    "step3": {
+      "actor": "광장 (code layer)",
+      "action": "요청된 리소스에 대해 순환 호출 체크",
+      "if_circular": "available=false, summary만 반환",
+      "if_ok": "리소스 제공"
+    },
+    "step4": {"actor": "Worker", "action": "태스크 완료 → 완료 상태 업데이트 요청 제출 (ChangeRequest)"}
+  },
+
+  "change_request_flow": {
+    "step1": {
+      "actor": "Worker",
+      "action": "ChangeRequest 제출",
+      "required_fields": ["request_type", "target_id", "payload", "rationale"]
+    },
+    "step2": {
+      "actor": "광장 (code layer)",
+      "action": "형식 검증 → 통과 시 광장 Agent에게 전달. 실패 시 즉시 rejected + 이유 반환"
+    },
+    "step3": {
+      "actor": "광장 Agent (LLM)",
+      "action": "요청 내용 검토 → 필요 서류 목록 결정 → Worker에게 요청"
+    },
+    "step4": {
+      "actor": "Worker",
+      "action": "서류 작성 및 제출 (submitted_docs 필드에 추가)"
+    },
+    "step5": {
+      "actor": "광장 (code layer)",
+      "action": "모든 required_docs가 submitted_docs에 있는지 확인. 없으면 awaiting_docs 유지."
+    },
+    "step6": {
+      "actor": "광장 Agent (LLM)",
+      "action": "서류 내용의 논리적 타당성 검토 → 승인 또는 거절 + review_note 작성"
+    },
+    "step7": {
+      "actor": "광장 (code layer)",
+      "action": "승인 시 변경 반영 + 로그 기록. 거절 시 로그 기록 (상태 변경 없음)."
+    }
+  },
+
+  "information_partitioning_rules": {
+    "rule1": "Worker는 배정된 프로젝트의 컨텍스트만 받음",
+    "rule2": "Worker는 현재 태스크의 직접 dependency만 볼 수 있음",
+    "rule3": "다른 Agent의 세션 컨텍스트는 절대 공유 안 됨",
+    "rule4": "광장만이 전체 프로젝트/태스크 목록을 가짐",
+    "rule5": "Worker가 요청한 리소스는 순환 체크 후 need-to-know 기준으로 필터링"
+  },
+
+  "circular_detection_rules": {
+    "definition": "A→B→C→A 또는 A→A 형태의 리소스 호출 체인",
+    "tracking": "호출마다 CallGraph에 엣지 추가",
+    "check_timing": "리소스 제공 직전 (코드 레이어)",
+    "detection_algorithm": "DFS on CallGraph, 현재 경로에서 방문 중인 노드 재방문 = 순환",
+    "response_on_cycle": {
+      "available": false,
+      "content": "summary_only (50자 이내 요약)",
+      "log": "circular_detected 이벤트 기록"
+    },
+    "scope": "단일 Agent 세션 내. 세션 간 순환은 별도 정책 (미결정)."
+  },
+
+  "document_requirements_policy": {
+    "current": "광장 Agent가 케이스별로 결정 (하드코딩된 기준 없음)",
+    "future": "로그 축적 → 패턴 분석 → 요구 서류 자동 결정 (광장 시스템 자기 업데이트)",
+    "minimum_always_required": {
+      "create_task": ["task_justification"],
+      "delete_task": ["task_justification", "impact_assessment"],
+      "complete_project": ["completion_evidence"],
+      "modify_project": ["rationale in request body"]
+    }
+  },
+
+  "link_inference_flow": {
+    "_added": "2026-05-28",
+    "_purpose": "task ↔ task typed edge 자동 추론. SPEC.json link_inference_system 의 호출 흐름.",
+    "trigger": [
+      "신규 task 생성 시 (자동)",
+      "task description / weighted_tag 변경 시 (자동)",
+      "monthly drift check (cron)",
+      "사용자 / Agent 명시적 요청 (request_link_inference)"
+    ],
+    "step1_candidate_generation": {
+      "actor": "광장 (code layer)",
+      "input": "target_task_id 또는 (task_a, task_b) 쌍",
+      "action": "BM25 / weighted_tag Jaccard / BGE-M3 dense 3-채널 점수 계산 → RRF fusion → top-K=10",
+      "output": "candidate task 쌍 리스트"
+    },
+    "step2_jury_typed_classification": {
+      "actor": "광장 (code layer) → LLM jury",
+      "models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+      "procedure": [
+        "각 후보 쌍 (A, B) 에 대해 두 순서 모두 호출 (A→B, B→A)",
+        "각 model 별 type 판정 + 짧은 rationale 수집",
+        "swap_consistent = (A→B result == B→A result) 검사",
+        "jury_agreement = (model_1 result == model_2 result) 검사",
+        "confidence = (swap_consistent * jury_agreement) → 0.0 / 0.5 / 1.0"
+      ],
+      "output": "TaskEdge 후보 (DATA_MODELS.json TaskEdge 스키마)"
+    },
+    "step3_persist": {
+      "actor": "광장 (code layer)",
+      "action": "confidence >= 0.5 인 edge 만 저장. 동일 (from, to, type) 쌍이 존재하면 last_verified_at 만 갱신.",
+      "log": "action_type='edge_inferred'"
+    },
+    "step4_notify_on_change_trigger": {
+      "_purpose": "type == notify_on_change 인 edge 에 대한 runtime 알림",
+      "trigger": "task.status 변경 OR task 의 산출물 schema 변경 (git commit diff 감지)",
+      "action": "edge 의 양쪽 task 의 assigned_agent 에 알림 발송 (PushNotification 또는 로그 기록)"
+    },
+    "request_link_inference": {
+      "request_type": "request_link_inference",
+      "payload": {"target_task_id": "Task.id", "force_refresh": "bool"},
+      "response": {"edges": ["TaskEdge[]"], "candidates_evaluated": "int", "duration_ms": "int"}
+    },
+    "confirm_edge": {
+      "request_type": "confirm_edge",
+      "_purpose": "사용자 / Agent 가 자동 추론된 edge 를 수동 확정",
+      "payload": {"edge_id": "TaskEdge.id"},
+      "side_effect": "edge.source -> 'human_confirmed', confidence -> 1.0"
+    },
+    "reject_edge": {
+      "request_type": "reject_edge",
+      "_purpose": "잘못 추론된 edge 제거",
+      "payload": {"edge_id": "TaskEdge.id", "reason": "string"},
+      "side_effect": "edge.status -> 'rejected', 로그에 사유 기록. 같은 쌍 재호출 시 reject 사유를 LLM jury prompt 에 포함하여 재발 방지."
+    }
+  },
+
+  "graph_export_flow": {
+    "_added": "2026-05-28",
+    "_purpose": "GraphJSON 표준 형식으로 외부 (lab_relationship_visualizer) 에 그래프 데이터 export",
+    "command": "gwangjang graph export [--scope tasks|projects|all] [--include-labs] [--output PATH]",
+    "actor": "광장 (code layer)",
+    "action": [
+      "scope 에 따라 노드 수집 (Task, Project, 선택적으로 lab)",
+      "TaskEdge 전체 로드 (status=='active' 필터)",
+      "lab 포함 시 lab_relationship_visualizer 의 lab similarity edge 와 merge",
+      "GraphJSON 스키마 (DATA_MODELS.json) 로 직렬화"
+    ],
+    "output_format": "DATA_MODELS.json GraphJSON 참조",
+    "consumer": "projects/lab_relationship_visualizer/ — Plotly / PyVis 렌더링 담당"
+  },
+
+  "gwangjang_agent_prompt_skeleton": {
+    "_note": "광장 Agent를 위한 시스템 프롬프트 뼈대. 구현 시 채움.",
+    "role": "당신은 LLM 광장의 관리 Agent입니다.",
+    "responsibilities": [
+      "Worker Agent의 자기소개를 받아 적합한 프로젝트를 추천",
+      "ChangeRequest를 검토하고 필요 서류를 요청",
+      "서류의 논리적 타당성을 검토하여 승인/거절 결정",
+      "모든 결정에는 review_note를 작성"
+    ],
+    "constraints": [
+      "순환 탐지는 코드가 처리 — 당신은 available=false인 옵션을 추천하지 않음",
+      "로그는 코드가 관리 — 당신이 직접 로그 파일을 수정하지 않음",
+      "정보 분리는 코드가 강제 — 당신은 need-to-know 컨텍스트만 Worker에게 전달"
+    ]
+  }
+}

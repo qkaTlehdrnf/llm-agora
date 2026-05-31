@@ -1,0 +1,205 @@
+{
+  "_file": "RELATED_WORK.json — 유사 멀티에이전트 프로젝트 분석 + 광장이 차용할 가치 있는 패턴",
+  "_purpose": "광장 설계 시 검토한 외부 시스템들. 각각의 핵심 패턴과 광장에 적용 가능 여부 기록.",
+  "_compiled_at": "2026-05-15",
+
+  "summary": {
+    "key_finding": "광장의 핵심 차별점 — 'similarity 기반 동적 프로젝트 배정 + 코드 레이어가 강제하는 need-to-know + 순환 탐지 + 변경 요청 서류 워크플로'의 조합은 현존 프레임워크에 직접 대응 없음.",
+    "biggest_validation": "Anthropic Multi-Agent Research System이 orchestrator-worker + 분리된 컨텍스트 창 패턴을 프로덕션 검증함 (90.2% 성능 향상, 단 15x 토큰 비용).",
+    "most_relevant_academic": "Arxiv 2510.11108 (Oct 2025) — Agent Access Control (AAC) — 광장 need-to-know의 이론적 토대"
+  },
+
+  "frameworks": {
+
+    "anthropic_multi_agent_research": {
+      "url": "https://www.anthropic.com/engineering/multi-agent-research-system",
+      "core_pattern": "Orchestrator-worker — lead agent가 분석/전략 수립 → 병렬 subagent들에 위임 → 결과 종합",
+      "key_validated_facts": [
+        "subagent별 분리된 컨텍스트 창이 병렬 추론 capacity 증가에 핵심",
+        "single Opus 대비 multi-agent (Opus lead + Sonnet workers)가 90.2% 성능 향상",
+        "토큰 비용 15x — 가치 있는 작업에만 적용",
+        "lead agent → subagent 위임 시 필수 4요소: objective, output format, tool guidance, task boundaries"
+      ],
+      "applicable_to_gwangjang": {
+        "validated_pattern": "광장(orchestrator) + Worker 구조가 학술적으로 검증됨",
+        "concrete_action": "광장이 Worker에게 컨텍스트 전달 시 4요소를 명시적으로 구조화 — task_*.json에 이미 action/done_when 있음. 'output format'과 'tool guidance' 필드 추가 검토.",
+        "cost_warning": "Worker 다수 병렬 실행 시 토큰 비용 폭증. 필요 시에만 multi-agent, 단일 작업은 single agent 권장."
+      }
+    },
+
+    "metagpt": {
+      "url": "https://arxiv.org/abs/2308.00352",
+      "core_pattern": "고정 역할 (PM/Architect/PjM/Engineer/QA) + 구조화 문서 (SOP) 통신",
+      "key_design_choice": "자연어 대화가 아닌 documents/diagrams로 통신 — 광장과 동일한 철학",
+      "limitation_vs_gwangjang": [
+        "역할이 SDLC에 고정 — 광장의 'self-description으로 동적 배정'과 정반대",
+        "변경 승인 워크플로 없음",
+        "정보 최소화는 context parser로 일부 구현, 코드 강제 아님"
+      ],
+      "applicable_to_gwangjang": {
+        "borrow": "구조화 문서 통신 원칙 (이미 반영됨)",
+        "skip": "고정 역할 모델 — 광장은 동적 배정으로 진행"
+      }
+    },
+
+    "chatdev_camel": {
+      "url": "https://github.com/OpenBMB/ChatDev",
+      "core_pattern": "회사 메타포 (CEO/CTO/Programmer) + CAMEL framework의 'inception prompting'",
+      "2025_evolution": "puppeteer-style — RL로 학습된 중앙 orchestrator가 동적으로 agent 활성화/순서 결정",
+      "applicable_to_gwangjang": {
+        "inception_prompting": "원본 instruction을 instructor/assistant용 명확한 목표로 확장하는 기법. 광장 Agent가 Worker에게 task 전달 시 사용 검토.",
+        "rl_learnable_orchestrator": "광장의 '로그 기반 자기 업데이트' 미래 비전과 직접 연결. ChatDev의 puppeteer가 검증된 reference 구현체.",
+        "concrete_action": "phase 7+에 RL-based 추천 가중치 조정 검토 시 ChatDev puppeteer 참조"
+      }
+    },
+
+    "langgraph": {
+      "url": "https://github.com/langchain-ai/langgraph",
+      "core_pattern": "Stateful DAG — 노드=agent, edge=control flow, 조건부 분기, 병렬 실행, durable state",
+      "key_features": [
+        "Human-in-the-loop checkpoints — 사용자 승인 단계 가능",
+        "Durable state management — 중단/재개 가능",
+        "v0.4 (April 2026): state persistence + checkpoint 강화"
+      ],
+      "applicable_to_gwangjang": {
+        "checkpoint_pattern": "광장의 ChangeRequest 승인 흐름은 LangGraph의 checkpoint와 개념적으로 동일 — 코드 레이어가 흐름을 멈추고 광장 Agent 검토 대기",
+        "borrow": "CallGraph를 LangGraph 스타일 graph로 모델링 검토 (현재는 단순 dict, 향후 networkx)",
+        "skip": "LangGraph 자체 의존성은 추가하지 않음 — 단순함 우선"
+      }
+    },
+
+    "crewai": {
+      "url": "https://github.com/crewAIInc/crewAI",
+      "core_pattern": "role + backstory + goal 정의 → crew로 묶고 task 부여 → framework가 coordination 추론",
+      "applicable_to_gwangjang": {
+        "agent_self_description_enhancement": "현재 광장 Agent.self_description은 단순 string. CrewAI 스타일 {role, backstory, goal, capabilities} 구조 차용 시 similarity 매칭 품질 향상 가능.",
+        "concrete_action": "DATA_MODELS.json의 Agent 스키마에 role/backstory/goal 필드 추가 검토 — phase 2에서 결정"
+      }
+    },
+
+    "autogen_ag2": {
+      "url": "https://github.com/microsoft/autogen",
+      "status": "Microsoft가 유지보수 모드 전환 → Microsoft Agent Framework로 이동",
+      "core_pattern": "GroupChat — 다수 agent가 conversation 공유, selector가 다음 발언자 결정. Event-driven async.",
+      "applicable_to_gwangjang": {
+        "skip_groupchat": "광장은 대화가 아닌 문서 기반 — GroupChat 패턴 불일치",
+        "event_driven_log": "AutoGen의 event-driven core처럼 광장 로그를 event stream으로 모델링하면 future replay/analysis 용이",
+        "concrete_action": "log_manager가 event stream API (subscribe/publish) 제공할지 phase 6+에 결정"
+      }
+    },
+
+    "openai_swarm_agents_sdk": {
+      "url": "https://github.com/openai/openai-agents-python",
+      "core_pattern": "Handoffs (명시적 agent-to-agent 제어 이전) + Guardrails (입출력 검증) + Tracing (관찰성)",
+      "applicable_to_gwangjang": {
+        "guardrails_concept": "광장의 validator.py = OpenAI Guardrails와 동일 개념. 코드 강제 입력 검증.",
+        "tracing": "광장 LogEntry = OpenAI Tracing과 유사. 단, 광장은 unmodifiable 강조.",
+        "handoffs_skip": "광장은 Agent가 다른 Agent에게 직접 hand off 불가 — 광장 경유만. OpenAI 패턴과 의도적 차이."
+      }
+    },
+
+    "aac_paper_arxiv_2510_11108": {
+      "url": "https://arxiv.org/abs/2510.11108",
+      "title": "A Vision for Access Control in LLM-based Agent Systems (Oct 2025)",
+      "core_claim": "binary access control(allow/deny)에서 dynamic information flow governance로 패러다임 전환 필요",
+      "two_pillars": {
+        "multi_dimensional_contextual_evaluation": "신원만이 아니라 관계, 시나리오, 규범까지 고려",
+        "adaptive_response_formulation": "redaction, summarization, paraphrasing으로 정보를 변형 — 완전 차단이 아님"
+      },
+      "direct_match_to_gwangjang": {
+        "summary_on_circular": "광장이 순환 탐지 시 'summary만 반환'하는 것 = AAC의 'summarization'",
+        "context_filter": "광장 context_filter.py가 need-to-know 적용 = AAC의 adaptive response formulation",
+        "concrete_action": "광장 설계 정당화 시 이 논문 인용 가능. context_filter 구현 시 redaction/summarization/paraphrasing 3가지 모드 명시적으로 분리하면 학술적으로 정렬됨."
+      },
+      "actionable_takeaway": [
+        "context_filter에 mode 필드 추가: 'full' | 'redacted' | 'summary' | 'paraphrased'",
+        "각 모드별 처리 함수 분리 구현"
+      ]
+    },
+
+    "zero_trust_multi_llm_survey": {
+      "url": "https://arxiv.org/html/2508.19870v1",
+      "title": "Secure Multi-LLM Agentic AI by Zero-Trust: A Survey (Aug 2025)",
+      "warning_for_gwangjang": [
+        "다단계 prompt로 분산된 정보를 재조합 추출하는 공격 존재 — 광장 need-to-know는 단일 query 차단만으로 불충분",
+        "탈중앙 환경에서 중앙 정책 강제 부재 시 정보 누출 — 광장은 중앙 집중형이라 유리",
+        "권장: 'never trust, always verify' 원칙"
+      ],
+      "applicable_to_gwangjang": {
+        "concrete_action": "Worker가 시간차로 여러 query를 던져 단편 정보를 재조합하는 시도 탐지 필요. log_manager 분석으로 패턴 탐지 가능.",
+        "phase": "phase 7+ (보안 강화 단계)에서 적용 검토"
+      }
+    }
+  },
+
+  "patterns_to_adopt": {
+    "high_priority": [
+      {
+        "pattern": "task 전달 4요소 명시화",
+        "source": "Anthropic Multi-Agent Research",
+        "where_in_gwangjang": "PROTOCOL.json onboarding step5 + task_*.json 스키마",
+        "fields_to_add": ["output_format", "tool_guidance"]
+      },
+      {
+        "pattern": "context_filter mode 분리 (full/redacted/summary/paraphrased)",
+        "source": "AAC paper (arxiv 2510.11108)",
+        "where_in_gwangjang": "src/context_filter.py",
+        "phase": "phase 3"
+      }
+    ],
+    "medium_priority": [
+      {
+        "pattern": "Agent self-description 구조화 (role + backstory + goal)",
+        "source": "CrewAI",
+        "where_in_gwangjang": "DATA_MODELS.json::Agent",
+        "phase": "phase 2 (Pydantic 모델 작성 시)"
+      },
+      {
+        "pattern": "Inception prompting — Worker 지시 명확화",
+        "source": "CAMEL/ChatDev",
+        "where_in_gwangjang": "src/coordinator.py prompt template",
+        "phase": "phase 6"
+      }
+    ],
+    "low_priority_future": [
+      {
+        "pattern": "RL-based 자기 업데이트 (puppeteer-style orchestrator)",
+        "source": "ChatDev 2025",
+        "where_in_gwangjang": "log_manager 데이터로 추천/서류요구 가중치 학습",
+        "phase": "phase 7+"
+      },
+      {
+        "pattern": "다단계 query 패턴 분석 (정보 재조합 공격 탐지)",
+        "source": "Zero-Trust Multi-LLM Survey",
+        "where_in_gwangjang": "log_manager.py 분석 기능",
+        "phase": "phase 7+ (보안)"
+      },
+      {
+        "pattern": "Event stream log API (subscribe/publish)",
+        "source": "AutoGen v0.4 event-driven core",
+        "where_in_gwangjang": "log_manager.py",
+        "phase": "phase 6+"
+      }
+    ]
+  },
+
+  "gwangjang_unique_contributions": {
+    "not_in_any_existing_framework": [
+      "Similarity 기반 동적 프로젝트 배정 (자기소개 → tag jaccard + sentence embedding)",
+      "순환 호출 코드 수준 탐지 + summary-only fallback",
+      "ChangeRequest 서류 요구 워크플로 (required_docs → submitted_docs 매칭)",
+      "프로젝트/태스크 상태 변경에 대한 LLM Agent 검토 + 승인",
+      "Append-only log를 시스템 자기개선 학습 데이터로 설계"
+    ],
+    "rationale": "기존 프레임워크는 'Agent 실행 인프라' 또는 '고정 역할 협업'에 집중. 광장은 '동적 협업 + 신뢰 가능한 변경 + 자기개선'이라는 빈자리를 채움."
+  },
+
+  "decisions_log": {
+    "2026-05-15": [
+      "AAC paper(arxiv 2510.11108)의 redaction/summarization/paraphrasing 모드 분리를 context_filter에 반영하기로 결정 — phase 3 task_code-layer.json 업데이트 예정",
+      "CrewAI 스타일 Agent self-description 구조화를 phase 2에서 검토하기로 결정 — task_data-models.json 업데이트 예정",
+      "Anthropic의 4요소(objective/output_format/tool_guidance/task_boundaries)를 task_*.json 스키마에 추가 검토",
+      "LangGraph/AutoGen 의존성 직접 채택은 보류 — 단순함 우선 원칙 유지"
+    ]
+  }
+}

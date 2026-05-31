@@ -1,0 +1,133 @@
+{
+  "_file": "ARCHITECTURE.json — 시스템 구조 및 구현 가이드",
+
+  "directory_structure": {
+    "./": "설계 문서 루트 (SPEC/DATA_MODELS/PROTOCOL/ARCHITECTURE/CALL_INTERFACE/DEPLOYMENT/BENCHMARKS/RELATED_WORK.json)",
+    "src/": "코드 레이어 + LLM 레이어 구현체",
+    "src/cli.py": "`gwangjang` 콘솔 명령 (init/discover/status/root/call/start)",
+    "src/call.py": "JSON in → method dispatch → JSON out 호출 인터페이스",
+    "src/utils.py": "find_gwangjang_root() + .gwangjang 마커 + 설정/init",
+    "src/discover.py": "폴더 구조 휴리스틱 디스커버리",
+    "src/models.py": "Pydantic 도메인 모델 (DATA_MODELS.json 미러)",
+    "src/store.py": "JSON 파일 데이터 스토어 (data_dir 파라미터)",
+    "src/validator.py": "ChangeRequest 형식 검증 + blocks DAG 사이클 검출",
+    "src/router.py": "리소스 라우팅 + 순환 호출 탐지",
+    "src/similarity.py": "자기소개 → 프로젝트 추천 (tag+TF-IDF+dense)",
+    "src/coordinator.py": "광장 Agent LLM 인터페이스 (변경요청 검토/승인/적용)",
+    "src/log_manager.py": "append-only 로그 관리",
+    "src/context_filter.py": "need-to-know 정보 필터링",
+    "src/link_inference/": "candidate_gen → judge(jury) → pipeline → graph_export",
+    "data.example/": "공개 합성 샘플 데이터 (스키마/동작 참고용)",
+    "data/": "런타임 인스턴스 데이터 (.gitignore, flat JSON 레이아웃)",
+    "data/projects.json": "프로젝트 레지스트리",
+    "data/tasks.json": "태스크 레지스트리",
+    "data/change_requests.json": "ChangeRequest 목록",
+    "data/agents.json": "온보딩된 Agent 목록",
+    "data/task_edges.json": "link_inference 산출 typed edges",
+    "data/log.jsonl": "append-only 로그"
+  },
+
+  "code_layer_components": {
+    "validator": {
+      "file": "src/validator.py",
+      "role": "ChangeRequest 형식 검증",
+      "checks": [
+        "required_fields 존재 여부",
+        "request_type 유효값 여부",
+        "target_id 존재하는 project/task_id인지",
+        "submitted_docs가 required_docs를 모두 포함하는지"
+      ],
+      "output": "ValidationResult(ok=bool, errors=list)"
+    },
+    "router": {
+      "file": "src/router.py",
+      "role": "리소스 요청 처리 + 순환 탐지",
+      "inputs": "agent_id, resource_id",
+      "steps": [
+        "CallGraph에 엣지 추가 시도",
+        "DFS로 순환 탐지",
+        "순환 없으면: context_filter 적용 후 리소스 반환",
+        "순환 있으면: RoutingResult(available=False, summary=...)"
+      ],
+      "output": "RoutingResult(available, content|summary, log_entry)"
+    },
+    "similarity": {
+      "file": "src/similarity.py",
+      "role": "Agent 자기소개 → 프로젝트 유사도 계산",
+      "inputs": "agent_description: str, agent_capabilities: list[str]",
+      "steps": [
+        "agent_capabilities → tag jaccard with project.tags",
+        "agent_description → sentence embedding (vLLM/Gemini)",
+        "cosine similarity with each project.description_llm embedding",
+        "final_score = tag*0.4 + semantic*0.6",
+        "sort by final_score → top-N",
+        "router로 각 프로젝트 available 확인"
+      ],
+      "returns": "list[SimilarityScore]"
+    },
+    "log_manager": {
+      "file": "src/log_manager.py",
+      "role": "불변 로그 관리",
+      "storage": "data/log.jsonl (append-only, monotone log_id)",
+      "write_mode": "open(path, 'a') — 덮어쓰기 없음",
+      "read": "선형 스캔 또는 인덱스 조회",
+      "future": "로그 분석 → 광장 시스템 파라미터 업데이트 (문서 요구 기준 등)"
+    },
+    "context_filter": {
+      "file": "src/context_filter.py",
+      "role": "need-to-know 기준으로 컨텍스트 필터링",
+      "rules": [
+        "Worker → 배정된 project_id의 데이터만",
+        "Task → prerequisite chain 내 태스크만",
+        "기타 프로젝트 → 제목+목표 한 줄 요약만 (추천 시)",
+        "다른 Agent 정보 → 완전 차단"
+      ]
+    }
+  },
+
+  "llm_layer_components": {
+    "coordinator": {
+      "file": "src/coordinator.py",
+      "role": "광장 LLM Agent — 변경요청 검토 담당 (Coordinator)",
+      "inputs_from_code_layer": [
+        "필수 서류 완비된 ChangeRequest (code-layer 게이트 통과)",
+        "판단 보조 컨텍스트 (target_exists, open_request_count 등)"
+      ],
+      "outputs": [
+        "decision: approve | reject | need_docs",
+        "review_note + extra_required_docs",
+        "승인 시 _apply_change 로 store 반영"
+      ],
+      "llm_backend": "MockCoordinator 기본 / GeminiCoordinator(GOOGLE_API_KEY) / ClaudeCoordinator(ANTHROPIC_API_KEY)"
+    },
+    "link_inference_jury": {
+      "file": "src/link_inference/judge.py",
+      "role": "typed edge 분류 LLM jury (swap-consistency + agreement)",
+      "llm_backend": "MockJudge 기본 / GeminiJudge + ClaudeHaikuJudge"
+    }
+  },
+
+  "data_flow_diagram": {
+    "onboarding": "Worker.describe() → router.check() → similarity.rank() → filter.apply() → Worker receives top-N",
+    "task_request": "Worker.request(resource_id) → router.check(circular) → filter.apply() → Worker receives content|summary",
+    "change_request": "Worker.submit(CR) → validator.check() → required_docs 게이트 → Worker.submit_docs() → validator.check_docs() → coordinator.review() → approve 시 _apply_change(store) + log_manager.append()"
+  },
+
+  "implementation_order": {
+    "phase1_design": ["SPEC.json", "DATA_MODELS.json", "PROTOCOL.json", "ARCHITECTURE.json", "CALL_INTERFACE.json"],
+    "phase2_data_structures": ["src/models.py (Pydantic)", "data/ 초기 파일 생성"],
+    "phase3_code_layer": ["src/validator.py", "src/log_manager.py", "src/context_filter.py", "src/router.py"],
+    "phase4_call_interface": ["src/call.py (CLI entry point — CALL_INTERFACE.json 구현)"],
+    "phase5_link_inference": ["src/link_inference/ (candidate_gen → judge → pipeline → graph_export)"],
+    "phase6_deployment": ["src/cli.py", "src/utils.py", "src/discover.py", "pyproject.toml"],
+    "phase7_similarity_and_coordinator": ["src/similarity.py", "src/coordinator.py"],
+    "phase8_integration": ["end-to-end test: init → onboard → get_context → submit_request → submit_docs → review_request"]
+  },
+
+  "design_decisions": {
+    "why_file_based": "현재 프로젝트 전체가 JSON 파일 기반. 일관성 + 로그 불변성 자연스럽게 달성.",
+    "why_separate_code_and_llm_layers": "코드가 규칙을 강제 → LLM은 의사결정만. 프롬프트 인젝션으로 규칙 우회 불가.",
+    "why_need_to_know": "Agent 컨텍스트 최소화 → 토큰 비용 절약 + 집중도 향상 + 정보 오염 방지.",
+    "why_append_only_log": "감사 추적 + 미래 시스템 자기 개선의 학습 데이터."
+  }
+}

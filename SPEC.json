@@ -1,0 +1,193 @@
+{
+  "_file": "SPEC.json — 광장 시스템 전체 명세. LLM 최적화. 인간 가독성 비고려.",
+  "_human_readme": "README.md — 사람용 목표/철학 요약 (open-source 방문자 진입점). 이 SPEC 의 philosophy 섹션이 그 출처.",
+  "_instance_data": "data/ = 비공개 실제 관리중 프로젝트 데이터 (.gitignore). data.example/ = 공개 합성 샘플. 프레임워크 코드/명세와 인스턴스 데이터는 분리됨.",
+  "_read_next": "DATA_MODELS.json → PROTOCOL.json → BENCHMARKS.json",
+  "_change_log": [
+    {"date": "2026-05-28", "change": "link_inference_system 신설 (similarity_system 확장). edge_types 5종, jury 기반 typed classification, lab_relationship_visualizer 통합. 결정 로그: docs/research_notes/task_linking_methodologies.md"}
+  ],
+
+  "system_name": "LLM 광장 (LLM Agora)",
+  "version": "0.1-design",
+
+  "philosophy": {
+    "inspiration": "회사 조직 시스템 — 구성원 각자가 전체를 몰라도 전문성만으로 전체 시스템이 작동",
+    "key_insight": "전체 지식 없이도 개발 성공 가능 = Agent당 최소 컨텍스트 + 코드 기반 행동 규제의 조합",
+    "two_mechanisms": {
+      "language_exchange": "LLM끼리 구조화된 문서를 생성·공유하여 정보 전달 (문서 쓰기, 읽기)",
+      "code_regulation": "코드가 LLM의 행동 방향을 강제 — 무엇을 할 수 있고 없는지를 프롬프트가 아닌 코드가 결정"
+    },
+    "emergent_goal": "단순 전문 Agent 다수 + 최소 지식 + 코드 규제 → 창발적으로 거대 시스템 구동",
+    "minimum_knowledge": "Agent는 현재 역할 수행에 필요한 것만 받는다. 불필요한 컨텍스트는 토큰 낭비이자 집중 방해.",
+    "why_code_not_prompt": "프롬프트로 규칙을 설명하면 LLM이 우회할 수 있음. 코드는 우회 불가. 신뢰할 수 있는 협업 경계선."
+  },
+
+  "actors": {
+    "gwangjang_agent": {
+      "role": "중앙 조정자 (Central Coordinator)",
+      "responsibilities": [
+        "Worker Agent 자기소개 수신 → 프로젝트 추천 (similarity 기반)",
+        "Agent 요청 검토 및 승인/거절",
+        "필요 서류 명세 결정 및 요청",
+        "정보 배분 통제 (need-to-know basis)",
+        "전체 로그 보존",
+        "순환 호출 탐지 및 차단 (코드 수준)"
+      ],
+      "knowledge_scope": "전체 프로젝트/태스크 메타데이터 + 로그. 세부 구현은 모름.",
+      "model": "별도 LLM Agent (worker와 독립)"
+    },
+    "worker_agent": {
+      "role": "도메인 전문가 실행자",
+      "responsibilities": [
+        "자기소개 제출 → 프로젝트 배정",
+        "광장이 제공한 컨텍스트 내에서 태스크 수행",
+        "변경 요청 제출 (광장 검토 필요)",
+        "결과물 문서화"
+      ],
+      "knowledge_scope": "배정된 프로젝트 + 현재 태스크 컨텍스트만. 다른 프로젝트 정보는 광장이 차단.",
+      "cannot": [
+        "직접 프로젝트/태스크 수정 (반드시 광장 경유)",
+        "순환 호출 (코드가 차단)",
+        "다른 Agent의 컨텍스트에 직접 접근"
+      ]
+    }
+  },
+
+  "layers": {
+    "code_layer": {
+      "role": "규칙 강제 인프라 (광장 Infrastructure)",
+      "enforces": [
+        "순환 호출 탐지 및 차단",
+        "요청 형식 검증 (malformed request → 즉시 거절)",
+        "정보 접근 권한 (Agent가 볼 수 없는 필드 필터링)",
+        "로그 불변성 (append-only, 삭제 불가)",
+        "서류 완비 여부 확인 (필요 서류 미제출 시 승인 불가)"
+      ],
+      "implementation": "Python validator + router (src/)"
+    },
+    "llm_layer": {
+      "role": "의사결정 + 콘텐츠 생성",
+      "handles": [
+        "Agent 자기소개 → 프로젝트 similarity 계산",
+        "요청 내용의 논리적 타당성 검토 (광장 Agent)",
+        "태스크 실행 및 결과물 생성 (Worker Agent)"
+      ]
+    }
+  },
+
+  "core_flows": {
+    "onboarding": "Worker 자기소개 → 광장 similarity 계산 → 프로젝트 추천 → Worker 선택 → 광장 PROJECT+TASK 컨텍스트 제공",
+    "task_execution": "Worker 태스크 수행 → 결과 문서화 → 상태 업데이트 요청 → 광장 검토 → 승인 시 반영 + 로그",
+    "change_request": "Worker 변경 요청 제출 → 광장 서류 목록 반환 → Worker 서류 제출 → 광장 검토 → 승인/거절 + 로그",
+    "circular_detection": "코드가 호출 그래프 추적 → DFS 사이클 탐지 → 감지 시 옵션 비활성화 + 요약만 제공"
+  },
+
+  "similarity_system": {
+    "_deprecated_by": "link_inference_system (2026-05-28). 단순 similarity 는 link_inference_system 의 candidate_generation 단계에 통합됨.",
+    "method": "Tag matching + Sentence embedding cosine similarity",
+    "tag_source": "projects/lab_weighted_tagging/ 시스템 재활용",
+    "embedding_backend": "vLLM (primary) / Gemini (fallback) — 기존 인프라 동일",
+    "output": "top-N 프로젝트 + similarity score (0.0-1.0)",
+    "threshold": "configurable, default 0.3"
+  },
+
+  "link_inference_system": {
+    "_added": "2026-05-28",
+    "_decision_log": "docs/research_notes/task_linking_methodologies.md",
+    "purpose": "task/project 간 typed edge 자동 추론 + 점수화. 겹침 방지, 상호 보완, 변경 추적의 코드 수준 구현.",
+    "edge_types": {
+      "blocks": {
+        "direction": "directed",
+        "strength": "hard",
+        "criterion": "B 산출물에 A 산출물이 필수 입력. A 없으면 B 의미 없음. DAG invariant (사이클 금지).",
+        "action": "scheduler 가 A.status == completed 전 B 시작 차단"
+      },
+      "overlaps_with": {
+        "direction": "undirected",
+        "strength": "soft_warning",
+        "criterion": "tag overlap > 0.6 AND 산출물 경로/모듈 겹침. 단순 같은 주제는 부족.",
+        "action": "시작 전 다른쪽 담당자에 조정 알림. 머지 충돌 예방."
+      },
+      "complements": {
+        "direction": "directed",
+        "strength": "soft_asymmetric",
+        "criterion": "A 산출물이 B 품질/정확도 입력으로 작용. B 는 A 없이도 동작은 함 (vs blocks).",
+        "action": "A.status == completed 시 B 담당자에 '산출물 사용 가능' 알림"
+      },
+      "notify_on_change": {
+        "direction": "undirected",
+        "strength": "runtime_trigger",
+        "criterion": "A 의 공개 인터페이스/스키마가 B 입력. 시작 시점 관계 아닌 지속 추적.",
+        "action": "A 의 status / 산출물 schema 변경 commit 시 B 담당자에 자동 알림",
+        "note": "광장 USP — 변경점 A 에 대한 최소 확인으로 과거 실수 반복 방지의 직접 구현"
+      },
+      "supersedes": {
+        "direction": "directed",
+        "strength": "lifecycle",
+        "criterion": "A 완료가 B 를 대체해 B 진행 가치 없음. 시간차 대체 (vs duplicates 동시 발견).",
+        "action": "B.status -> superseded (삭제 아닌 별도 상태로 보존)"
+      }
+    },
+    "pipeline": [
+      {
+        "stage": "candidate_generation",
+        "methods": [
+          "BM25 on task description",
+          "weighted_tag Jaccard (lab_weighted_tagging / one_step_tagger 출력 재활용)",
+          "dense embedding cosine (BGE-M3, 다국어)"
+        ],
+        "fusion": "Reciprocal Rank Fusion (RRF)",
+        "output": "top-K=10 후보 task 쌍"
+      },
+      {
+        "stage": "typed_classification",
+        "method": "LLM-as-jury pairwise",
+        "models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+        "bias_mitigation": {
+          "swap_consistency": "두 순서 (A->B, B->A) 호출. 일치만 채택, 불일치는 unknown 보류.",
+          "jury_agreement": "최소 2 model 합의 필요. 불일치 시 보류.",
+          "drift_check": "monthly 같은 쌍 재호출로 응답 drift 모니터"
+        },
+        "confidence_score": "(swap_agreement) * (jury_agreement) -> {0.0, 0.5, 1.0} 3단",
+        "output": "(task_a, task_b, type, confidence)"
+      },
+      {
+        "stage": "scoring",
+        "online_metric": "RAGAS context_precision (reference-free, daily eval)",
+        "self_consistency_metric": "월별 (A,B) 쌍 재판정 일치율 — drift detection",
+        "p2_metric": "OGB-style Hits@K + MRR (GraphSAGE self-test split, P2 phase)"
+      }
+    ],
+    "human_in_loop": {
+      "decision": "사람 라벨 없음 (LLM jury only). swap-consistency + jury-agreement 두 가드로 신뢰성 확보."
+    },
+    "labeling": "none — LLM jury 가 영구 운영. BERT fine-tune (P1) 경로 폐기.",
+    "evolution_phases": {
+      "P0_current": "BM25 + Jaccard + BGE-M3 dense -> RRF -> LLM jury typed. 평가: RAGAS context_precision 0.55+, self-consistency 0.7+",
+      "P2_future": "+ GraphSAGE (속성=weighted_tags + BGE-M3 emb), unsupervised. 평가: OGB-style Hits@K / MRR self-test"
+    }
+  },
+
+  "log_system": {
+    "append_only": true,
+    "deletable": false,
+    "fields": ["timestamp", "actor", "action_type", "before_state", "after_state", "request_id", "context"],
+    "future_use": "로그 기반으로 광장 시스템 자동 업데이트 (서류 요구 기준, 추천 알고리즘 등)"
+  },
+
+  "document_system": {
+    "purpose": "Agent 변경 요청 시 광장이 요구하는 '서류'",
+    "format": "LLM-최적화 JSON (인간 가독성 비고려)",
+    "requirements_source": "현재: 광장 Agent가 케이스별 결정. 미래: 로그 기반 자동 결정",
+    "immutable": true
+  },
+
+  "call_interface": {
+    "summary": "MCP보다 단순한 단방향 호출 인터페이스. Agent → 광장 호출만 있음. 스트리밍/협상 없음.",
+    "spec_file": "CALL_INTERFACE.json"
+  },
+
+  "project_data_path": "data/",
+  "source_code_path": "src/",
+  "design_docs_path": "./"
+}

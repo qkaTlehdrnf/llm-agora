@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Instance data — your live "managed-project" store.
+# This directory holds the REAL projects/tasks the Plaza is coordinating for
+# your own instance. It is private and instance-specific. NEVER commit it.
+#
+# To start a fresh instance from the public sample:
+#   cp -r data.example data
+#
+# The committed, synthetic reference dataset lives in data.example/ instead.
+# ---------------------------------------------------------------------------
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Packaging / editable-install artifacts
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Local agent .gwangjang/ roots created during testing
+.gwangjang/
