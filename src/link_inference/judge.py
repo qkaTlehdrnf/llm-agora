@@ -208,6 +208,95 @@ class ClaudeHaikuJudge(Judge):
         return (type_, str(data.get("rationale", ""))[:200])
 
 
+class LocalLLMJudge(Judge):
+    """Judge backed by a local OpenAI-/Ollama-compatible LLM server.
+
+    Uses the Ollama native ``/api/chat`` endpoint with ``think: false`` (the
+    OpenAI ``/v1`` shim ignores the think flag, so reasoning models burn the
+    whole token budget on hidden thoughts and return empty content). No API key
+    needed. Backend is env-driven so the public framework hardcodes no infra:
+
+      LOCAL_LLM_BASE_URL   e.g. http://host:11434  (a trailing /v1 is stripped)
+      LOCAL_LLM_MODEL      e.g. qwen3.6:35b
+
+    ``system_prompt`` / ``allowed_types`` are injectable so the same judge can
+    score project↔project edges (a restricted type set) as well as task↔task.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        name: str | None = None,
+        system_prompt: str | None = None,
+        allowed_types: Iterable[str] | None = None,
+        temperature: float = 0.0,
+        timeout: float = 120.0,
+    ):
+        url = base_url or os.environ.get("LOCAL_LLM_BASE_URL") or "http://localhost:11434"
+        self._base = url.rstrip("/")
+        if self._base.endswith("/v1"):
+            self._base = self._base[: -len("/v1")]
+        self.model = model or os.environ.get("LOCAL_LLM_MODEL") or "qwen3"
+        self.name = name or f"local:{self.model}"
+        self._system_prompt = system_prompt or _system_prompt()
+        self._allowed = set(allowed_types) if allowed_types is not None else set(EDGE_TYPE_VALUES)
+        self._temperature = temperature
+        self._timeout = timeout
+
+    def _extract_json(self, text: str) -> dict:
+        import json as _json
+        import re
+
+        text = (text or "").strip()
+        # Strip <think>…</think> if a reasoning model leaked it into content.
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        if text.startswith("```"):
+            text = text.strip("`").lstrip("json").strip()
+        try:
+            return _json.loads(text)
+        except _json.JSONDecodeError:
+            m = re.search(r"\{.*\}", text, flags=re.DOTALL)  # last-resort: first {...}
+            if m:
+                try:
+                    return _json.loads(m.group(0))
+                except _json.JSONDecodeError:
+                    return {}
+            return {}
+
+    def classify(self, a: Task, b: Task) -> tuple[str | None, str]:
+        import json as _json
+        import urllib.request
+
+        payload = {
+            "model": self.model,
+            "stream": False,
+            "think": False,
+            "options": {"temperature": self._temperature, "num_predict": 400},
+            "messages": [
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": _user_prompt(a, b)},
+            ],
+        }
+        req = urllib.request.Request(
+            f"{self._base}/api/chat",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                body = _json.load(resp)
+        except Exception as exc:  # noqa: BLE001 — network/timeout → unknown, no crash
+            return (UNKNOWN, f"local LLM call failed: {type(exc).__name__}")
+
+        text = (body.get("message") or {}).get("content", "")
+        data = self._extract_json(text)
+        type_ = data.get("type")
+        if type_ == "unknown" or type_ not in self._allowed:
+            type_ = UNKNOWN
+        return (type_, str(data.get("rationale", ""))[:200])
+
+
 # ---------------------------------------------------------------------------
 # Jury — aggregate per-pair across judges with swap-consistency guard
 # ---------------------------------------------------------------------------
@@ -325,6 +414,7 @@ __all__ = [
     "MockJudge",
     "GeminiJudge",
     "ClaudeHaikuJudge",
+    "LocalLLMJudge",
     "Jury",
     "JuryVerdict",
     "default_jury",

@@ -4,7 +4,8 @@
   "_instance_data": "data/ = 비공개 실제 관리중 프로젝트 데이터 (.gitignore). data.example/ = 공개 합성 샘플. 프레임워크 코드/명세와 인스턴스 데이터는 분리됨.",
   "_read_next": "DATA_MODELS.json → PROTOCOL.json → BENCHMARKS.json",
   "_change_log": [
-    {"date": "2026-05-28", "change": "link_inference_system 신설 (similarity_system 확장). edge_types 5종, jury 기반 typed classification, lab_relationship_visualizer 통합. 결정 로그: docs/research_notes/task_linking_methodologies.md"}
+    {"date": "2026-05-28", "change": "link_inference_system 신설 (similarity_system 확장). edge_types 5종, jury 기반 typed classification, lab_relationship_visualizer 통합. 결정 로그: docs/research_notes/task_linking_methodologies.md"},
+    {"date": "2026-06-13", "change": "action_guard_system 신설. Worker Agent 의 runtime 행동(CLI·편집·삭제)을 실행 전/중/후 코드 레이어가 규제. code_regulation 원리의 runtime 확장. 주제(topic)·경로(path) 양쪽 바인딩, 모델 무관 engine + 어댑터(Claude 훅/git hook/CLI). seed: destructive_data_ops·destructive_fs_ops·session_entry_alert. 동기: 프롬프트/메모리 규칙이 LLM 망각으로 무력화된 실사례."}
   ],
 
   "system_name": "LLM 광장 (LLM Agora)",
@@ -165,6 +166,93 @@
     "evolution_phases": {
       "P0_current": "BM25 + Jaccard + BGE-M3 dense -> RRF -> LLM jury typed. 평가: RAGAS context_precision 0.55+, self-consistency 0.7+",
       "P2_future": "+ GraphSAGE (속성=weighted_tags + BGE-M3 emb), unsupervised. 평가: OGB-style Hits@K / MRR self-test"
+    }
+  },
+
+  "action_guard_system": {
+    "_added": "2026-06-13",
+    "_purpose": "Worker Agent 의 runtime 행동(CLI 명령·코드 편집·파일 조작)을 실행 전/중/후 코드 레이어가 규제. change_request_flow 가 '광장 데이터 변경'을 규제하듯, 이 시스템은 'Agent 가 환경에 가하는 부수효과(side-effect)'를 규제한다.",
+    "_relation_to_philosophy": "philosophy.code_regulation 의 runtime 확장. why_code_not_prompt 와 동일: 위험 행동 차단을 프롬프트 훈계가 아닌 코드 게이트로 강제(LLM 우회 불가).",
+    "_motivating_case": "프롬프트/메모리 기반 규칙(예: 세션 시작 시 urgent/high task 환기, 위험 명령 재확인)은 LLM 이 잊으면 무력화됨. 실제 환기 누락 발생 → 코드 게이트로 격상 필요. 이 시스템이 그 격상이다.",
+
+    "lifecycle": {
+      "pre_action": {
+        "when": "Agent 가 행동(tool_use)을 실행하기 직전. 하니스가 의도된 action payload 를 게이트에 전달.",
+        "input": "GuardAction {kind: 'cli'|'edit'|'write'|'delete'|..., payload: 명령문/diff/경로, cwd, topic_tags}",
+        "output": "GuardVerdict {decision: 'allow'|'warn'|'require_confirmation'|'block', rule_id, reason, suggestion?}",
+        "effect": "block→실행 취소, require_confirmation→사람 확인 후에만 진행, warn→경고 로그 후 진행, allow→통과"
+      },
+      "in_action": {
+        "when": "장기 실행 action 진행 중(선택적). 리소스/시간 한도 모니터.",
+        "status": "P0 미구현. 훅 가용 시 확장."
+      },
+      "post_action": {
+        "when": "행동 완료 직후.",
+        "effect": "결과를 LogEntry(before_state/after_state)로 기록. 위반/실패 패턴 누적 → 규칙 자동 보강 입력(log_system.future_use 와 동일 철학).",
+        "optional": "post-condition 검증(예: 삭제 후 백업 존재 확인) 실패 시 후속 경고"
+      }
+    },
+
+    "rule_organization": {
+      "rule": "원자 규칙 (id, match(action)->bool, decision, reason). 예: destructive.drop_table.",
+      "profile": "주제(topic)별 규칙 묶음. 한 profile 이 여러 rule 을 합성하고 공유 rule 을 재사용. 예: profile 'db_write' = [destructive_data_ops, dml_no_where, schema_migration].",
+      "manifest": {
+        "_purpose": "'어떤 상황에 어떤 profile 을 적용할지' 바인딩. ★폴더 기준과 주제 기준을 둘 다 지원(핵심 요구).",
+        "by_path": "cwd / 대상 경로 glob → profile. 예: 'infra/aws/**' → ['db_write','cloud_destructive'].",
+        "by_topic": "action 의 topic_tags 또는 명령 내용 추론 → profile. 예: topic∈{aws_db, gcs_db} → 'db_write'. 폴더가 달라도 같은 주제면 같은 규칙 공유(AWS DB·GCS DB 가 destructive 규칙 공유).",
+        "resolution": "by_path 와 by_topic 결과 union. 가장 엄격한 decision 채택(block > require_confirmation > warn > allow)."
+      }
+    },
+
+    "enforcement": {
+      "model_agnostic_core": "engine(순수 함수 GuardAction→GuardVerdict)은 하니스/모델 무관. rules·profiles·manifest 만으로 동작.",
+      "adapters": {
+        "claude_pretooluse": "Claude Code PreToolUse 훅 → tool_use payload 를 engine 에 전달, decision 을 permissionDecision(allow/deny/ask)로 매핑. 하니스 강제(우회 불가).",
+        "claude_sessionstart": "SessionStart 훅 → 세션 진입 게이트(예: urgent/high task 환기) engine 호출.",
+        "git_hook": "pre-commit/pre-push → 커밋 diff·푸시를 동일 engine 으로 검사(사람·타 에이전트도 커버).",
+        "cli": "gwangjang guard check '<GuardAction JSON>' → 임의 진입점에서 명시적 검사."
+      },
+      "principle": "규칙은 engine 한 곳, 여러 어댑터가 호출. 규칙 중복 0. 어댑터는 thin."
+    },
+
+    "verdict_semantics": {
+      "allow": "통과.",
+      "warn": "통과하되 경고 로그(soft).",
+      "require_confirmation": "사람의 명시적 승인 없이 진행 불가. 승인 방식은 어댑터별(훅 'ask' 프롬프트 / 일회용 확인 토큰·플래그). ※구체 방식 open_decisions 참조(미정).",
+      "block": "무조건 차단. 우회 불가."
+    },
+
+    "seed_rules": {
+      "destructive_data_ops": {
+        "decision": "require_confirmation",
+        "match": "DROP TABLE/DATABASE, TRUNCATE, WHERE 없는 DELETE/UPDATE, 광범위 GRANT/REVOKE, 대량 행 삭제, 스키마 파괴 마이그레이션",
+        "rationale": "기존 정보 통째 삭제/DB 날림은 비가역. 명령자 재확인 1회 필수.",
+        "shared_by": ["aws_db", "gcs_db", "임의 db profile"]
+      },
+      "destructive_fs_ops": {
+        "decision": "require_confirmation",
+        "match": "rm -rf, 대량 파일 overwrite, 보호 브랜치 git push --force, 디렉토리 통째 삭제",
+        "rationale": "파일/이력 비가역 손실 방지."
+      },
+      "session_entry_alert": {
+        "decision": "warn",
+        "match": "세션 시작 시점",
+        "effect": "urgent/high active task title 1회 환기(프롬프트 의존 제거).",
+        "rationale": "메모리 규칙 누락 실사례의 코드 게이트 격상."
+      }
+    },
+
+    "log_integration": "모든 guard 평가는 LogEntry 로 기록(action_type='guard_evaluated', 차단 시 'guard_blocked'). DATA_MODELS.LogEntry.action_type enum 확장 필요(후속).",
+
+    "open_decisions": [
+      "require_confirmation 의 사람 승인 방식: 훅 'ask' 프롬프트 vs 일회용 토큰/플래그 vs 둘 다(headless 대응).",
+      "engine·rules 코드 위치: src/guard/ 내부 가정. 확정 필요.",
+      "타 하니스(Codex/Cursor) 어댑터 우선순위."
+    ],
+
+    "evolution_phases": {
+      "P0": "engine + manifest(by_path/by_topic) + seed_rules 3종 + claude_pretooluse·sessionstart 어댑터.",
+      "P1": "git_hook·cli 어댑터, post-condition 검증, 로그 기반 규칙 자동 보강."
     }
   },
 

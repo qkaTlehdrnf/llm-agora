@@ -23,3 +23,11 @@ dist/
 
 # Local agent .gwangjang/ roots created during testing
 .gwangjang/
+
+# ---------------------------------------------------------------------------
+# Prior-art / external-tool analysis — OUR competitive know-how (기술력).
+# Tracks how external systems (AgentSpec, LlamaFirewall, OPA, ...) work and
+# what we can benchmark/borrow. Private and instance-specific. NEVER commit
+# to the public OSS repo.
+# ---------------------------------------------------------------------------
+prior_art/

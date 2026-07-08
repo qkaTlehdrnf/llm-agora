@@ -68,8 +68,8 @@
         "task": "<Task 객체 | null>",
         "available_next_tasks": ["task_id"]
       },
-      "on_circular": {"ok": false, "error": "CIRCULAR", "summary": "50자 이내 요약만 반환"},
-      "side_effects": ["CallGraph에 엣지 추가", "순환 탐지"]
+      "on_repeat": {"ok": false, "code": "REPEAT_CALL_CONFIRM", "requires_confirmation": true, "retry_with": {"confirm_repeat": true}, "note": "이미 이 세션에서 받은 컨텍스트를 다시 요청하면 경고 후 재확인 요구. confirm_repeat=true로 재요청하면 재제공(repeat_confirmed 로그)."},
+      "side_effects": ["CallGraph에 엣지 추가", "세션 내 재요청 감지(경고+재확인)"]
     },
 
     "submit_request": {
@@ -137,6 +137,41 @@
         "review_note": "string | null — 광장 Agent의 검토 코멘트",
         "missing_docs": ["아직 미제출 서류 — awaiting_docs 상태일 때"]
       }
+    },
+
+    "get_constitution": {
+      "desc": "현재 헌법(constitution) 조회. 헌법은 공개 규칙이므로 누구나 열람 가능.",
+      "params": {},
+      "returns": {"version": "int", "articles": ["<Article {number,text,reason,immutable}>"], "core_agents": ["agent_id"], "ratified_at": "iso8601 | null"}
+    },
+
+    "propose_amendment": {
+      "desc": "헌법 개정 발의 (5조 — 누구나 제의 가능). 1조 불변·6조 이유필수는 코드가 발의 단계에서 강제.",
+      "params": {
+        "kind": "add | amend_article | replace | roster_change",
+        "reason": "string — 발의 사유 (6조, 필수)",
+        "payload": "kind별: add/amend_article={article:{number,text,reason}}, replace={constitution:{...}}, roster_change={add:[id],remove:[id]}"
+      },
+      "returns": {"amendment_id": "string", "status": "open", "core_votes": "int", "needed": "int"},
+      "on_illegal": {"ok": false, "code": "AMENDMENT_ILLEGAL", "note": "1조 개정 시도 또는 6조 이유 누락 시 큐 진입 전 차단"},
+      "side_effects": ["data/amendments.json 추가", "LogEntry (amendment_proposed | amendment_rejected)"]
+    },
+
+    "endorse_amendment": {
+      "desc": "개정안 지지/표결 (5조). 비핵심 Agent=결재 상향(endorsement), 핵심 Agent=비준표(core vote). 정족수 충족 순간 자동 비준·적용.",
+      "params": {"amendment_id": "string"},
+      "returns": {"amendment_id": "string", "status": "open | ratified", "core_votes": "int", "needed": "int", "ratified": "bool"},
+      "quorum": "교체(replace)=핵심 2/3(2조), 그 외(add/amend/roster)=핵심 1/2(5조)",
+      "side_effects": ["비준 시 data/constitution.json 교체(version+1)", "LogEntry (amendment_endorsed | amendment_ratified)"]
+    },
+
+    "delegate": {
+      "desc": "핵심 Agent가 하위 Agent에게 TASK를 위임 (4조 orchestration). 위임 체인도 CallGraph 순환 가드 적용.",
+      "params": {"sub_agent_id": "string", "task_id": "string"},
+      "returns": {"delegated_to": "agent_id", "task": "<Task (need-to-know 필터)>", "project_id": "string"},
+      "on_not_core": {"ok": false, "code": "NOT_CORE_AGENT", "note": "핵심 Agent가 아니면 위임 불가(4조)"},
+      "on_circular": {"ok": false, "code": "CIRCULAR", "note": "위임 순환(A→B→…→A) 차단"},
+      "side_effects": ["CallGraph에 core→sub 엣지 추가", "LogEntry (delegation)"]
     }
   },
 

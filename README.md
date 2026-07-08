@@ -35,12 +35,38 @@
 
 | | 역할 | 아는 것 |
 |---|---|---|
-| **광장 Agent** (Coordinator) | 중앙 조정자. 프로젝트 추천, 요청 승인/거절, 정보 배분 통제, 로그 보존, 순환 호출 차단 | 전체 프로젝트/태스크 메타데이터 + 로그 (세부 구현은 모름) |
+| **광장 Agent** (Coordinator) | 중앙 조정자. 프로젝트 추천, 요청 승인/거절, 정보 배분 통제, 로그 보존, 이미 받은 컨텍스트 재요청 경고·재확인 | 전체 프로젝트/태스크 메타데이터 + 로그 (세부 구현은 모름) |
 | **Worker Agent** (Specialist) | 배정된 컨텍스트 안에서 태스크 수행, 변경 요청 제출 | 배정된 프로젝트 + 현재 태스크 컨텍스트만 (다른 프로젝트는 광장이 차단) |
 
-Worker는 직접 프로젝트/태스크를 수정할 수 없고(반드시 광장 경유), 순환 호출도
-코드가 차단하며, 다른 Agent의 컨텍스트에 직접 접근할 수 없습니다 —
+Worker는 직접 프로젝트/태스크를 수정할 수 없고(반드시 광장 경유), 한 세션에서
+**이미 받은 컨텍스트를 다시 요청하면 코드가 경고하고 재확인을 요구하며**(무한
+재요청 루프 방지), 다른 Agent의 컨텍스트에 직접 접근할 수 없습니다 —
 모두 **코드 레이어가 강제**합니다.
+
+> 참고: task edge 의 `blocks` 관계가 만드는 **DAG 사이클**은 별개로
+> `validator.py` 가 검출합니다(아래 § link_inference). `router.py` 는 그와 다른,
+> "한 세션 내 동일 컨텍스트 재요청" 감지기입니다.
+
+---
+
+## 📜 헌법 (Constitution)
+
+광장은 **헌법** 아래에서 동작합니다. 규칙 그 자체의 개정 절차마저 프롬프트가
+아니라 코드가 강제합니다(1조 불변, 6조 이유필수, 개정 정족수). 정본은
+[`CONSTITUTION.md`](./CONSTITUTION.md), 기계형은 [`data/constitution.json`](./data/constitution.json),
+집행 코드는 [`src/constitution.py`](./src/constitution.py) 입니다.
+
+| 조 | 요지 | 집행 |
+|---|---|---|
+| 1조 (불변) | 모든 헌법은 변경 가능 — 단 1조 자신은 개정 불가 | 개정안이 1조를 건드리면 코드가 거부 |
+| 2조 | 핵심 Agent **2/3** 동의 → 헌법 **교체** | `required_core_votes("replace")` |
+| 3조 | 최대한 **독립 TASK · 최소 PROMPT** | `context_filter` + `link_inference` |
+| 4조 | 핵심 Agent가 하위 Agent **Orchestration** | `delegate` (+ 위임 순환 가드) |
+| 5조 | **누구나 발의** → 결재 상향 → 핵심 **1/2** 로 **추가** | `propose_amendment`/`endorse_amendment` |
+| 6조 | 모든 규칙은 **이유와 함께 기록** | `Article.reason` 필수 |
+
+호출: `get_constitution` · `propose_amendment` · `endorse_amendment` · `delegate`
+([`CALL_INTERFACE.json`](./CALL_INTERFACE.json)).
 
 ---
 
@@ -78,9 +104,10 @@ llm_agora/
 │   ├── discover.py         폴더 구조 휴리스틱 디스커버리 (프로젝트/태스크)
 │   ├── similarity.py       Worker 자기소개 → 프로젝트 추천 (tag+TF-IDF+dense)
 │   ├── coordinator.py      광장 Agent — 변경요청 LLM 검토(승인/거절/추가서류)
+│   ├── constitution.py     헌법 — 개정 정족수·1조 불변·6조 이유필수를 코드로 강제
 │   ├── store.py            JSON 파일 데이터 스토어 (data_dir 파라미터)
 │   ├── validator.py        형식 검증 + DAG 사이클 검출
-│   ├── router.py           순환 호출 탐지
+│   ├── router.py           세션 내 동일 컨텍스트 재요청 감지(경고+재확인)
 │   ├── context_filter.py   need-to-know 가시성 필터
 │   ├── log_manager.py      append-only 로그
 │   └── link_inference/     후보 생성 → jury → 파이프라인 → graph export
@@ -185,6 +212,7 @@ gwangjang call '{"method":"review_request","params":{"request_id":"..."}}'
 
 ## 📄 더 읽기
 
+- [`CONSTITUTION.md`](./CONSTITUTION.md) — 헌법 정본 (조문 + 개정 절차 + 코드 대응)
 - [`SPEC.json`](./SPEC.json) — 전체 시스템 명세 (시작점)
 - [`DATA_MODELS.json`](./DATA_MODELS.json) — 데이터 모델
 - [`PROTOCOL.json`](./PROTOCOL.json) — 호출/협업 프로토콜

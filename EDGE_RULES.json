@@ -1,0 +1,66 @@
+{
+  "_purpose": "Operational rules for task_edges.json (typed node-to-node relations) so edges can be created and validated WITHOUT relying on example/demo edges. Edge SEMANTICS are owned by SPEC.json link_inference_system.edge_types; this file only codifies the operational/governance rules layered on top.",
+  "_history": [
+    {"date": "2026-05-28", "note": "At link_inference_system P0, 42 demo edges were created in a single batch by MockJudge (mock-A/mock-B). These were NOT real judgments."},
+    {"date": "2026-06-18", "note": "Removed all 42 demo edges (criterion: jury_models == [mock-A, mock-B]). Extracted rules into this file. Backup: data/task_edges.json.pre_demo_cleanup.bak. One edge remains, edge-4a01d4a126a5 (human_confirmed, dangling) — see known_exceptions."}
+  ],
+
+  "storage_format": {
+    "file": "projects/llm_gwangjang/data/task_edges.json",
+    "shape": "A plain JSON list (array). Do NOT add a top-level metadata/comment key — Store._load expects a list and runs TaskEdge.model_validate on each item.",
+    "read_write": "Do not hand-edit; use the Store API: list_task_edges() / append_task_edge(edge) / save_task_edges(edges). Hand-editing bypasses the confidence invariant validation.",
+    "git": "data/ is gitignored (private). Edge changes are NOT version-controlled by git; rely on dated .bak backups before bulk edits.",
+    "edge_schema_fields": ["id", "from_task_id", "to_task_id", "type", "direction", "confidence", "source", "jury_models", "swap_consistent", "jury_agreement", "created_at", "last_verified_at", "status"]
+  },
+
+  "id_rules": {
+    "edge_id": "Never author by hand. models.py TaskEdge.id uses default_factory `edge-{uuid4().hex[:12]}` (auto-generated). uuid4 guarantees uniqueness.",
+    "node_id (= task id)": "An edge's from_task_id/to_task_id reference task.id values in tasks.json verbatim. task.id follows the hand-authored `<project>-<slug>` convention (e.g. gwangjang-call-interface). Uniqueness is convention-only, so choose new task ids that do not collide with existing ones.",
+    "no_dangling": "Both from and to must reference task.id values that actually exist in tasks.json. Do not create edges pointing at non-existent nodes (dangling)."
+  },
+
+  "type_and_direction": {
+    "_authority": "SPEC.json link_inference_system.edge_types (including criterion/action). The lines below are only a direction summary.",
+    "blocks": "directed (A->B: B requires A's output as input; DAG, no cycles)",
+    "complements": "directed (A->B: A feeds B's quality; B still functions without A)",
+    "supersedes": "directed (A->B: completing A replaces B)",
+    "overlaps_with": "undirected (tag overlap > 0.6 AND overlapping output paths/modules; same topic alone is insufficient)",
+    "notify_on_change": "undirected (A's public interface/schema is B's input; continuous tracking)",
+    "rule": "type and direction must match the _EDGE_DIRECTION mapping in models.py, and self-loops (from == to) are forbidden. Enforced by the TaskEdge validator."
+  },
+
+  "confidence_and_source": {
+    "formula": "confidence = (swap_consistent ? 1.0 : 0.5) * (jury_agreement ? 1.0 : 0.5), except 0.0 when both are false. Only {0.0, 0.5, 1.0} are allowed. If the value is inconsistent with the two booleans, the model validator rejects it.",
+    "swap_consistent": "True only when both orderings (A->B and B->A) yield the same judgment. Disagreement is held back (no edge created).",
+    "jury_agreement": "True when at least 2 distinct REAL models agree.",
+    "source": {
+      "llm_jury": "Edge produced by the LLM jury pipeline. Record the real model ids in jury_models.",
+      "human_confirmed": "Confirmed directly by a human. Set jury_models=[] (no judging model)."
+    },
+    "real_jury_models": ["gemini-2.5-flash", "claude-haiku-4-5-20251001"],
+    "FORBIDDEN_mock": "An edge whose jury_models contains 'mock-A'/'mock-B' is MockJudge (heuristic demo) output, not a real judgment. Must NOT be persisted. If found in data/, it is demo residue and should be removed."
+  },
+
+  "lifecycle": {
+    "status": "active is the default. A task targeted by supersedes is preserved as task.status=superseded, not deleted.",
+    "verification": "drift_check re-judges the same pair monthly and refreshes last_verified_at. Hand-made human_confirmed edges are not subject to drift checks."
+  },
+
+  "how_to_add_without_examples": [
+    "1) Pick a candidate pair (via discover/similarity or human judgment). A candidate is not a registration — persist only after explicit approval.",
+    "2) Decide the type against SPEC edge_types.criterion. If none clearly fits, do not create an edge (no forced classification).",
+    "3) Verify from/to actually exist in tasks.json (no_dangling).",
+    "4) human_confirmed: source='human_confirmed', jury_models=[], set swap_consistent/jury_agreement per your confidence (usually both true -> confidence=1.0). llm_jury: only real 2-model pipeline results.",
+    "5) Add via Store.append_task_edge(TaskEdge(...)) — leave id to auto-generation.",
+    "6) Never persist anything judged by mock-* models."
+  ],
+
+  "known_exceptions": [
+    {
+      "edge_id": "edge-4a01d4a126a5",
+      "pair": "llc-quality-eval <-> wsb-qwen-world-model (overlaps_with, human_confirmed)",
+      "issue": "Violates no_dangling — both endpoints are currently not seeded in projects/llm_gwangjang/data/tasks.json (non-gwangjang tasks, reseed deferred).",
+      "decision": "Kept because it is the only non-demo, human-confirmed edge. Once tasks.json is reseeded (deferred, user said 'later') and the endpoints exist, it normalizes. Until then it is an intended dangling edge."
+    }
+  ]
+}

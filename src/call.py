@@ -14,9 +14,20 @@ import argparse
 import json
 import sys
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
+from .constitution import (
+    AmendmentProposal,
+    apply_amendment,
+    check_amendment_legal,
+    load_amendments,
+    load_constitution,
+    save_amendments,
+    save_constitution,
+    tally,
+)
 from .context_filter import filter_project_for_agent, filter_task_for_agent
 from .coordinator import (
     DECISION_APPROVE,
@@ -238,19 +249,37 @@ class GwangjangCLI:
         agent.current_project_id = project_id
         agent.current_task_id = task_id
 
-        # Cycle check: re-requesting the same project within this session.
+        # Re-entry (already-served) guard: this fires when the agent requests a
+        # project it has ALREADY been served in the current session. It is not a
+        # hard block — a long-lived session may legitimately need the context
+        # again — but the agent must be warned and must explicitly confirm the
+        # repeat first, so a runaway re-fetch loop can't happen silently.
         decision = self.router.request(agent_id, f"project:{project_id}")
         if not decision.allowed:
+            if not params.get("confirm_repeat"):
+                # First hit: warn once and require an explicit re-request.
+                self.log.append(
+                    actor=agent_id,
+                    action_type=LogActionType.repeat_warned,
+                    target={"type": "project", "id": project_id},
+                    context={"reason": decision.reason},
+                )
+                return _err(
+                    "REPEAT_CALL_CONFIRM",
+                    f"⚠️ 이미 이 세션에서 project:{project_id} 컨텍스트를 받았습니다. "
+                    "정말 다시 받으려면 confirm_repeat=true 로 재요청하세요.",
+                    warning=True,
+                    requires_confirmation=True,
+                    retry_with={"confirm_repeat": True},
+                    summary=f"project:{project_id} already served this session",
+                )
+            # Agent explicitly acknowledged the warning → serve again, but record
+            # the override so the repeat is auditable in the log.
             self.log.append(
                 actor=agent_id,
-                action_type=LogActionType.circular_detected,
+                action_type=LogActionType.repeat_confirmed,
                 target={"type": "project", "id": project_id},
                 context={"reason": decision.reason},
-            )
-            return _err(
-                "CIRCULAR",
-                decision.reason or "circular_dependency",
-                summary=f"project:{project_id} already in call chain",
             )
 
         project = self.store.get_project(project_id)
@@ -548,6 +577,143 @@ class GwangjangCLI:
                 "missing_docs": missing,
             }
         )
+
+    # ---- constitution: read ----
+    def _method_get_constitution(self, params: dict) -> dict:
+        """헌법은 공개 규칙이므로 누구나 열람 가능."""
+        c = load_constitution(self.store.data_dir)
+        return _ok(c.model_dump(mode="json"))
+
+    # ---- constitution: propose amendment (Art.5 — anyone may propose) ----
+    def _method_propose_amendment(self, params: dict) -> dict:
+        agent_id = params.get("agent_id", "anonymous")
+        c = load_constitution(self.store.data_dir)
+        proposal = AmendmentProposal(
+            id=params.get("id") or f"amend-{uuid.uuid4().hex[:8]}",
+            kind=params["kind"],
+            proposer=agent_id,
+            reason=params.get("reason", ""),
+            payload=params.get("payload", {}),
+            created_at=_iso_now(),
+        )
+        # Art.1 immutability + Art.6 reason-required are checked in code — a
+        # malformed or illegal proposal never even enters the queue.
+        try:
+            check_amendment_legal(proposal, c)
+        except (ValueError, KeyError) as e:
+            self.log.append(
+                actor=agent_id,
+                action_type=LogActionType.amendment_rejected,
+                target={"type": "amendment", "id": proposal.id},
+                context={"reason": f"illegal: {e}"},
+            )
+            return _err("AMENDMENT_ILLEGAL", str(e))
+
+        amendments = load_amendments(self.store.data_dir)
+        amendments.append(proposal)
+        save_amendments(self.store.data_dir, amendments)
+        self.log.append(
+            actor=agent_id,
+            action_type=LogActionType.amendment_proposed,
+            target={"type": "amendment", "id": proposal.id},
+            context={"kind": proposal.kind, "reason": proposal.reason},
+        )
+        _ratified, have, needed = tally(proposal, c)
+        return _ok({"amendment_id": proposal.id, "status": proposal.status,
+                    "core_votes": have, "needed": needed})
+
+    # ---- constitution: endorse / vote (Art.5 escalation + ratify) ----
+    def _method_endorse_amendment(self, params: dict) -> dict:
+        agent_id = params.get("agent_id", "anonymous")
+        amendment_id = params["amendment_id"]
+        c = load_constitution(self.store.data_dir)
+        amendments = load_amendments(self.store.data_dir)
+        p = next((a for a in amendments if a.id == amendment_id), None)
+        if p is None:
+            return _err("NOT_FOUND", f"amendment not found: {amendment_id!r}")
+        if p.status != "open":
+            return _err("AMENDMENT_CLOSED", f"amendment already {p.status}")
+
+        is_core = agent_id in set(c.core_agents)
+        # Non-core agents endorse (escalation chain); core agents cast the
+        # ratifying vote. Both are recorded (Art.6 spirit — auditable).
+        if is_core:
+            if agent_id not in p.core_votes:
+                p.core_votes.append(agent_id)
+        else:
+            if agent_id not in p.endorsements:
+                p.endorsements.append(agent_id)
+        self.log.append(
+            actor=agent_id,
+            action_type=LogActionType.amendment_endorsed,
+            target={"type": "amendment", "id": p.id},
+            context={"as_core": is_core},
+        )
+
+        ratified, have, needed = tally(p, c)
+        if ratified:
+            new_c = apply_amendment(p, c, when=_iso_now())
+            save_constitution(self.store.data_dir, new_c)
+            p.status = "ratified"
+            p.resolved_at = _iso_now()
+            self.log.append(
+                actor="gwangjang",
+                action_type=LogActionType.amendment_ratified,
+                target={"type": "amendment", "id": p.id},
+                context={"new_version": new_c.version, "core_votes": have},
+            )
+        save_amendments(self.store.data_dir, amendments)
+        return _ok({"amendment_id": p.id, "status": p.status,
+                    "core_votes": have, "needed": needed,
+                    "ratified": ratified})
+
+    # ---- delegation (Art.4 — core agent orchestrates a sub-agent) ----
+    def _method_delegate(self, params: dict) -> dict:
+        agent_id = params.get("agent_id", "anonymous")
+        sub_agent_id = params["sub_agent_id"]
+        task_id = params["task_id"]
+        c = load_constitution(self.store.data_dir)
+        if agent_id not in set(c.core_agents):
+            return _err(
+                "NOT_CORE_AGENT",
+                f"Art.4: only core agents may delegate; {agent_id!r} is not core",
+            )
+        task = self.store.get_task(task_id)
+        if task is None:
+            return _err("NOT_FOUND", f"task not found: {task_id!r}")
+
+        # Reuse the call graph: a delegation is a core→sub edge, so the same
+        # cycle / re-entry guard prevents a delegation loop (A→B→…→A).
+        decision = self.router.request(agent_id, f"agent:{sub_agent_id}")
+        if not decision.allowed:
+            self.log.append(
+                actor=agent_id,
+                action_type=LogActionType.circular_detected,
+                target={"type": "agent", "id": sub_agent_id},
+                context={"reason": decision.reason},
+            )
+            return _err("CIRCULAR", decision.reason or "delegation cycle",
+                        summary=f"agent:{sub_agent_id} already in delegation chain")
+
+        # The sub-agent is assigned to the task's project; hand back exactly the
+        # need-to-know context (Art.3 minimal prompt) via the same filter.
+        sub = self.store.get_agent(sub_agent_id) or Agent(
+            id=sub_agent_id, type=AgentType.worker,
+            self_description="(delegated)", current_project_id=task.project_id,
+        )
+        sub.current_project_id = task.project_id
+        sub.current_task_id = task_id
+        self.log.append(
+            actor=agent_id,
+            action_type=LogActionType.delegation,
+            target={"type": "task", "id": task_id},
+            context={"sub_agent": sub_agent_id, "project": task.project_id},
+        )
+        return _ok({
+            "delegated_to": sub_agent_id,
+            "task": filter_task_for_agent(task, sub),
+            "project_id": task.project_id,
+        })
 
 
 # ---------------------------------------------------------------------------
